@@ -320,7 +320,6 @@ def flush_l2tp():
         for line in out.splitlines():
             if "TP27:L2TP-ACTIVE" not in line:
                 continue
-            # Convert "-A CHAIN ..." to deletion arguments safely enough for our generated rules.
             import shlex
             parts = shlex.split(line)
             if len(parts) >= 3 and parts[0] == "-A":
@@ -385,8 +384,13 @@ def status(args):
             )
     elif cfg.get("role") == "exit":
         e = cfg.get("exit", {})
-        print(f"exit_id={e.get('id','')} iface={e.get('interface','')} tunnel={e.get('tunnel_ip','')}")
-        print(run(["wg", "show"], check=False))
+        iface = e.get("interface", "")
+        print(f"exit_id={e.get('id','')} iface={iface} tunnel={e.get('tunnel_ip','')}")
+        if iface:
+            out = run(["wg", "show", iface], check=False)
+            print(out if out else f"TP27 interface {iface} is not active")
+        else:
+            print("TP27 exit interface is not initialized yet")
 
 def doctor(args):
     cfg = load()
