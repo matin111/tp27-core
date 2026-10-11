@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from auth import make_session, session_ok, verify_password
 from provision import CORE_CONFIG, JOBS, load_json, preflight, provision, run, validate_id
 from ports import add_custom, apply_profile, set_l2tp, state as port_state
+from portplan import validate_plan
 
 BASE = Path(__file__).resolve().parent
 app = FastAPI(title='TP27 Control Panel', docs_url=None, redoc_url=None)
@@ -40,10 +41,18 @@ class SSHProbe(BaseModel):
     private_key: Optional[str] = None
 
 
+class PortMappingInput(BaseModel):
+    service: str = Field(min_length=1, max_length=24)
+    proto: str
+    listen_port: int = Field(ge=1, le=65535)
+    target_port: int = Field(ge=1, le=65535)
+
+
 class ExitCreate(SSHProbe):
     id: Optional[str] = None
     tunnel_port: Optional[int] = Field(default=None, ge=1, le=65535)
     mtu: int = Field(default=1280, ge=1000, le=1500)
+    mappings: list[PortMappingInput] = Field(default_factory=list)
 
 
 class ServiceProfile(BaseModel):
@@ -133,6 +142,7 @@ async def add_exit(request: Request, body: ExitCreate):
         ipaddress.ip_address(body.host)
         if body.id:
             validate_id(body.id)
+        mapping_plan = validate_plan([m.model_dump() for m in body.mappings])
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if not body.password and not body.private_key:
@@ -141,7 +151,7 @@ async def add_exit(request: Request, body: ExitCreate):
     JOBS[job_id] = {'id': job_id, 'state': 'queued', 'messages': []}
     asyncio.create_task(provision(job_id, body.host, body.port, body.username,
                                   body.password, body.private_key, body.id,
-                                  body.tunnel_port, body.mtu))
+                                  body.tunnel_port, body.mtu, mapping_plan))
     return {'job_id': job_id}
 
 
