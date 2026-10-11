@@ -114,7 +114,7 @@ curl -fsSL "$RAW/panel/requirements.txt" -o /opt/tp27-panel/requirements.txt
 for f in app.py auth.py provision.py provision_password.py provision_agent.py agent_control.py ports.py portplan.py; do
   curl -fsSL "$RAW/panel/$f" -o "/opt/tp27-panel/$f"
 done
-for f in index.html login.html style.css app.js; do
+for f in index.html login.html style.css app.js agent-manage.js; do
   curl -fsSL "$RAW/panel/static/$f" -o "/opt/tp27-panel/static/$f"
 done
 curl -fsSL "$RAW/systemd/tp27-panel.service" -o "$PANEL_UNIT"
