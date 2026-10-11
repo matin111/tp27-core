@@ -51,25 +51,56 @@ def find_exit(exit_id: str):
     return None
 
 
+def exit_channels(item: dict):
+    rows = item.get('channels') or [item]
+    return [x for x in rows if x.get('id') or x.get('interface')]
+
+
+def _channel_health(row: dict):
+    cid = row.get('id', '')
+    iface = row.get('interface', '')
+    remote_ip = row.get('remote_ip', '')
+    svc_rc, svc_out, svc_err = run(
+        ['systemctl', 'is-active', f'tp27-link@{cid}.service'], check=False
+    ) if cid else (1, '', '')
+    iface_rc, _, _ = run(['ip', 'link', 'show', iface], check=False) if iface else (1, '', '')
+    ping_rc = 1
+    if iface and remote_ip:
+        ping_rc, _, _ = run(['ping', '-I', iface, '-c', '1', '-W', '1', remote_ip], check=False)
+    return {
+        'id': cid,
+        'interface': iface,
+        'remote_ip': remote_ip,
+        'port': row.get('port'),
+        'service': svc_rc == 0,
+        'interface_up': iface_rc == 0,
+        'ping': ping_rc == 0,
+        'healthy': svc_rc == 0 and iface_rc == 0 and ping_rc == 0,
+        'service_text': (svc_out or svc_err or '').strip(),
+    }
+
+
 def cleanup_local_exit(exit_id: str):
-    run(['systemctl', 'disable', '--now', f'tp27-link@{exit_id}.service'], check=False)
-    run(['systemctl', 'reset-failed', f'tp27-link@{exit_id}.service'], check=False)
+    item = find_exit(exit_id) or {'id': exit_id}
+    rows = exit_channels(item)
+    ids = {exit_id}
+    ids.update(x.get('id') for x in rows if x.get('id'))
 
-    try:
-        (EXITS / f'{exit_id}.json').unlink(missing_ok=True)
-    except Exception:
-        pass
-
-    for path in (
-        CERTS / f'{exit_id}.crt',
-        CERTS / f'{exit_id}.key',
-        CERTS / f'{exit_id}-iran.crt',
-        CERTS / f'{exit_id}-iran.key',
-    ):
+    for cid in ids:
+        run(['systemctl', 'disable', '--now', f'tp27-link@{cid}.service'], check=False)
+        run(['systemctl', 'reset-failed', f'tp27-link@{cid}.service'], check=False)
         try:
-            path.unlink(missing_ok=True)
+            (EXITS / f'{cid}.json').unlink(missing_ok=True)
         except Exception:
             pass
+        for path in (
+            CERTS / f'{cid}.crt', CERTS / f'{cid}.key',
+            CERTS / f'{cid}-iran.crt', CERTS / f'{cid}-iran.key',
+        ):
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     core = load_json(CORE_CONFIG)
     core.setdefault('exits', [])
@@ -86,26 +117,27 @@ def cleanup_local_exit(exit_id: str):
 
 async def diagnose_exit_record(item: dict):
     eid = item.get('id', '')
-    iface = item.get('interface', '')
-    remote_ip = item.get('remote_ip', '')
+    checks = [_channel_health(row) for row in exit_channels(item)]
+    healthy_count = sum(1 for x in checks if x['healthy'])
+    total = len(checks)
 
-    svc_rc, svc_out, svc_err = run(
-        ['systemctl', 'is-active', f'tp27-link@{eid}.service'], check=False
-    )
-    iface_rc, _, _ = run(['ip', 'link', 'show', iface], check=False) if iface else (1, '', '')
-    ping_rc = 1
-    if iface and remote_ip:
-        ping_rc, _, _ = run(
-            ['ping', '-I', iface, '-c', '1', '-W', '1', remote_ip], check=False
-        )
-
-    _, log_out, log_err = run([
-        'journalctl', '-u', f'tp27-link@{eid}.service',
-        '-n', '18', '--no-pager', '-o', 'cat'
-    ], check=False)
-    local_log = (log_out or log_err or '').strip()
-    if len(local_log) > 3500:
-        local_log = local_log[-3500:]
+    logs = []
+    for ch in checks:
+        if ch['healthy']:
+            continue
+        cid = ch.get('id')
+        if not cid:
+            continue
+        _, out, err = run([
+            'journalctl', '-u', f'tp27-link@{cid}.service',
+            '-n', '12', '--no-pager', '-o', 'cat'
+        ], check=False)
+        text = (out or err or '').strip()
+        if text:
+            logs.append(f'===== {cid} =====\n{text[-1800:]}')
+    local_log = '\n\n'.join(logs)
+    if len(local_log) > 5000:
+        local_log = local_log[-5000:]
 
     agent = get_agent(item.get('agent_id', '')) if item.get('agent_id') else None
     remote_status = ''
@@ -114,23 +146,29 @@ async def diagnose_exit_record(item: dict):
         if len(remote_status) > 3500:
             remote_status = remote_status[-3500:]
 
-    healthy = svc_rc == 0 and iface_rc == 0 and ping_rc == 0
+    primary = checks[0] if checks else {}
+    healthy = healthy_count > 0
     return {
         'id': eid,
         'healthy': healthy,
-        'local_service': svc_rc == 0,
-        'interface_up': iface_rc == 0,
-        'peer_ping': ping_rc == 0,
+        'degraded': 0 < healthy_count < total,
+        'local_service': healthy_count > 0,
+        'interface_up': any(x['interface_up'] for x in checks),
+        'peer_ping': any(x['ping'] for x in checks),
         'endpoint': item.get('endpoint'),
         'port': item.get('port'),
-        'interface': iface,
-        'remote_ip': remote_ip,
+        'interface': item.get('interface') or primary.get('interface'),
+        'remote_ip': item.get('remote_ip') or primary.get('remote_ip'),
         'agent_id': item.get('agent_id'),
         'agent_online': bool(agent and agent.get('online')),
         'agent_hostname': (agent or {}).get('hostname'),
         'local_log': local_log,
         'remote_status': remote_status,
-        'service_text': (svc_out or svc_err or '').strip(),
+        'mode': item.get('mode', 'single'),
+        'channels_total': total,
+        'channels_healthy': healthy_count,
+        'channels': checks,
+        'service_text': f'{healthy_count}/{total} channels healthy' if total else '',
     }
 
 
@@ -215,19 +253,26 @@ async def status(request: Request):
     pstate = port_state()
     rows = []
     for item in cfg.get('exits', []):
+        checks = [_channel_health(row) for row in exit_channels(item)]
+        healthy_count = sum(1 for x in checks if x['healthy'])
+        total = len(checks)
         eid = item.get('id', '')
-        iface = item.get('interface', '')
-        svc_rc, _, _ = run(['systemctl','is-active','--quiet',f'tp27-link@{eid}.service'], check=False)
-        ping_rc = 1
-        if iface and item.get('remote_ip'):
-            ping_rc, _, _ = run(['ping','-I',iface,'-c','1','-W','1',item['remote_ip']], check=False)
         mappings = [m for m in pstate.get('mappings', []) if m.get('exit_id') == eid]
-        rows.append({**item, 'healthy': svc_rc == 0 and ping_rc == 0,
-                     'mappings': mappings,
-                     'l2tp_active': pstate.get('active_l2tp_exit') == eid})
-    return {'version': cfg.get('version'), 'role': cfg.get('role'),
-            'public_ip': cfg.get('public_ip'), 'exits': rows,
-            'active_l2tp_exit': pstate.get('active_l2tp_exit')}
+        rows.append({
+            **item,
+            'healthy': healthy_count > 0,
+            'degraded': 0 < healthy_count < total,
+            'channels_total': total,
+            'channels_healthy': healthy_count,
+            'channel_status': checks,
+            'mappings': mappings,
+            'l2tp_active': pstate.get('active_l2tp_exit') == eid,
+        })
+    return {
+        'version': cfg.get('version'), 'role': cfg.get('role'),
+        'public_ip': cfg.get('public_ip'), 'exits': rows,
+        'active_l2tp_exit': pstate.get('active_l2tp_exit')
+    }
 
 
 @app.get('/api/exits/{exit_id}/diagnose')
@@ -248,26 +293,37 @@ async def repair_exit(request: Request, exit_id: str):
     if not item:
         raise HTTPException(status_code=404, detail='تونل پیدا نشد')
 
+    rows = exit_channels(item)
     agent_id = item.get('agent_id')
+    remote_errors = []
     if agent_id:
         agent = get_agent(agent_id)
         if not agent or not agent.get('online'):
             raise HTTPException(status_code=400, detail='Agent سرور خارج آفلاین است')
-        try:
-            command = queue_command(agent_id, 'restart_link', {'id': exit_id})
-            result = await wait_command(command['id'], timeout=45)
-            if result.get('state') != 'done' or not result.get('ok'):
-                raise RuntimeError(result.get('error') or 'Restart سرور خارج ناموفق بود')
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+        for row in rows:
+            cid = row.get('id') or exit_id
+            try:
+                command = queue_command(agent_id, 'restart_link', {'id': cid})
+                result = await wait_command(command['id'], timeout=45)
+                if result.get('state') != 'done' or not result.get('ok'):
+                    remote_errors.append(result.get('error') or f'Restart {cid} ناموفق بود')
+            except Exception as exc:
+                remote_errors.append(str(exc))
 
-    rc, out, err = run(['systemctl', 'restart', f'tp27-link@{exit_id}.service'], check=False)
-    if rc != 0:
-        raise HTTPException(status_code=400, detail=err or out or 'Restart ایران ناموفق بود')
+    local_errors = []
+    for row in rows:
+        cid = row.get('id') or exit_id
+        rc, out, err = run(['systemctl', 'restart', f'tp27-link@{cid}.service'], check=False)
+        if rc != 0:
+            local_errors.append(err or out or f'Restart {cid} ایران ناموفق بود')
+
+    if local_errors and len(local_errors) == len(rows):
+        raise HTTPException(status_code=400, detail=' | '.join(local_errors[:2]))
 
     await asyncio.sleep(4)
     result = await diagnose_exit_record(find_exit(exit_id))
     result['repaired'] = result.get('healthy', False)
+    result['restart_warnings'] = remote_errors + local_errors
     return result
 
 
@@ -294,37 +350,46 @@ async def delete_exit(request: Request, exit_id: str):
         raise HTTPException(status_code=404, detail='تونل پیدا نشد')
 
     remote_cleanup = 'not-required'
-    warning = None
+    warnings = []
     agent_id = item.get('agent_id')
+    rows = exit_channels(item)
     if agent_id:
         agent = get_agent(agent_id)
         if agent and agent.get('online'):
-            try:
-                command = queue_command(agent_id, 'delete_exit', {'id': exit_id})
-                result = await wait_command(command['id'], timeout=45)
-                if result.get('state') == 'done' and result.get('ok'):
-                    remote_cleanup = 'done'
-                else:
-                    err = str(result.get('error') or 'حذف روی Agent ناموفق بود')
-                    if 'unsupported action' in err.lower():
-                        remote_cleanup = 'pending-agent-upgrade'
-                        warning = 'تونل از ایران حذف شد؛ Agent فعلی قدیمی است و پاک‌سازی فایل‌های TP27 خارج بعد از ارتقای Agent انجام می‌شود.'
+            successful = 0
+            unsupported = False
+            for row in rows:
+                cid = row.get('id') or exit_id
+                try:
+                    command = queue_command(agent_id, 'delete_exit', {'id': cid})
+                    result = await wait_command(command['id'], timeout=45)
+                    if result.get('state') == 'done' and result.get('ok'):
+                        successful += 1
                     else:
-                        raise RuntimeError(err)
-            except RuntimeError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
-            except Exception as exc:
-                raise HTTPException(status_code=400, detail=f'حذف روی Agent خارج ناموفق بود: {exc}')
+                        err = str(result.get('error') or 'حذف روی Agent ناموفق بود')
+                        if 'unsupported action' in err.lower():
+                            unsupported = True
+                        else:
+                            warnings.append(f'{cid}: {err}')
+                except Exception as exc:
+                    warnings.append(f'{cid}: {exc}')
+            if unsupported:
+                remote_cleanup = 'pending-agent-upgrade'
+                warnings.append('Agent فعلی قدیمی است؛ پاک‌سازی کامل فایل‌های TP27 خارج بعد از ارتقای Agent انجام می‌شود.')
+            elif successful == len(rows):
+                remote_cleanup = 'done'
+            else:
+                remote_cleanup = 'partial'
         else:
             remote_cleanup = 'pending-agent-online'
-            warning = 'تونل از ایران حذف شد؛ Agent خارج آفلاین است و پاک‌سازی راه دور فعلاً انجام نشد.'
+            warnings.append('Agent خارج آفلاین است و پاک‌سازی راه دور فعلاً انجام نشد.')
 
     cleanup_local_exit(exit_id)
     return {
         'ok': True,
         'id': exit_id,
         'remote_cleanup': remote_cleanup,
-        'warning': warning,
+        'warning': ' '.join(warnings) if warnings else None,
     }
 
 
