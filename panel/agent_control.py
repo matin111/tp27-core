@@ -23,7 +23,6 @@ LOCK = threading.RLock()
 
 ALLOWED_ACTIONS = {
     'status',
-    'ensure_core',
     'provision_exit',
     'restart_link',
 }
@@ -130,8 +129,11 @@ def queue_command(agent_id: str, action: str, args=None):
     _valid_agent_id(agent_id)
     if action not in ALLOWED_ACTIONS:
         raise ValueError('action مجاز نیست')
-    if not get_agent(agent_id):
+    agent = get_agent(agent_id)
+    if not agent:
         raise ValueError('Agent پیدا نشد')
+    if not agent.get('online'):
+        raise ValueError('Agent آفلاین است')
     item = {
         'id': secrets.token_hex(12),
         'agent_id': agent_id,
