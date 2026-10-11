@@ -1,0 +1,14 @@
+[Unit]
+Description=TP27 L3 TLS Tunnel (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/tp27/tp27-link %i
+Restart=always
+RestartSec=2
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
