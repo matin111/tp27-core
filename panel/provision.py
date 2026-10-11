@@ -1,0 +1,207 @@
+import asyncio
+import ipaddress
+import json
+import os
+import re
+import shlex
+import subprocess
+import time
+from pathlib import Path
+
+import asyncssh
+
+ROOT = Path('/etc/tp27')
+CORE_CONFIG = ROOT / 'config.json'
+EXITS = ROOT / 'exits'
+CERTS = ROOT / 'certs'
+JOB_DIR = Path('/var/log/tp27/panel-jobs')
+RAW = os.environ.get('TP27_REPO_RAW', 'https://raw.githubusercontent.com/matin111/tp27-core/main')
+JOBS = {}
+
+
+def run(cmd, check=True):
+    p = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if check and p.returncode != 0:
+        raise RuntimeError((p.stderr or p.stdout or 'command failed').strip())
+    return p.returncode, (p.stdout or '').strip(), (p.stderr or '').strip()
+
+
+def load_json(path, default=None):
+    try:
+        return json.loads(Path(path).read_text())
+    except Exception:
+        return {} if default is None else default
+
+
+def atomic_json(path, data, mode=0o600):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    tmp.write_text(json.dumps(data, indent=2) + '\n')
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def validate_id(value):
+    if not re.fullmatch(r'[a-zA-Z0-9_-]{1,24}', value):
+        raise ValueError('شناسه نامعتبر است')
+    return value
+
+
+def iface_for(eid):
+    return ('t27' + re.sub(r'[^a-z0-9]', '', eid.lower()))[:15]
+
+
+def next_values(cfg):
+    used = {e.get('id') for e in cfg.get('exits', [])}
+    n = 1
+    while f'exit{n:02d}' in used:
+        n += 1
+    subnets = list(ipaddress.ip_network('10.254.250.0/24').subnets(new_prefix=30))
+    if n > len(subnets):
+        raise RuntimeError('فضای آدرس TP27 پر شده است')
+    net = subnets[n - 1]
+    hosts = list(net.hosts())
+    return f'exit{n:02d}', f'{hosts[1]}/30', f'{hosts[0]}/30', 44329 + n
+
+
+def ensure_client_cert(eid, iran_ip):
+    cert = CERTS / f'{eid}-iran.crt'
+    key = CERTS / f'{eid}-iran.key'
+    CERTS.mkdir(parents=True, exist_ok=True)
+    if not cert.exists() or not key.exists():
+        run(['openssl','req','-x509','-newkey','rsa:2048','-sha256','-nodes','-days','3650',
+             '-subj',f'/CN={iran_ip}','-addext',f'subjectAltName=IP:{iran_ip}',
+             '-keyout',str(key),'-out',str(cert)])
+        os.chmod(key, 0o600)
+        os.chmod(cert, 0o644)
+    return cert, key
+
+
+def job_set(job_id, state=None, message=None, error=None, result=None):
+    j = JOBS.setdefault(job_id, {'id': job_id, 'state': 'queued', 'messages': []})
+    if state:
+        j['state'] = state
+    if message:
+        j['messages'].append({'ts': int(time.time()), 'text': message})
+        JOB_DIR.mkdir(parents=True, exist_ok=True)
+        with (JOB_DIR / f'{job_id}.log').open('a') as f:
+            f.write(message + '\n')
+    if error:
+        j['error'] = error
+    if result:
+        j['result'] = result
+    return j
+
+
+async def open_ssh(host, port, username, password=None, private_key=None):
+    kwargs = dict(host=host, port=port, username=username, known_hosts=None,
+                  connect_timeout=12, login_timeout=15)
+    if password:
+        kwargs['password'] = password
+    if private_key:
+        kwargs['client_keys'] = [asyncssh.import_private_key(private_key)]
+    return await asyncssh.connect(**kwargs)
+
+
+async def preflight(host, port, username, password=None, private_key=None):
+    conn = await open_ssh(host, port, username, password, private_key)
+    try:
+        key = conn.get_server_host_key().get_fingerprint()
+        r = await conn.run('printf "TP27_OK\\n"; id -u; hostname', check=False)
+        return {'ok': r.exit_status == 0, 'fingerprint': key,
+                'stdout': r.stdout.strip(), 'stderr': r.stderr.strip()}
+    finally:
+        conn.close()
+        await conn.wait_closed()
+
+
+async def provision(job_id, host, ssh_port, username, password, private_key,
+                    requested_id=None, tunnel_port=None, mtu=1280):
+    conn = None
+    try:
+        job_set(job_id, state='running', message=f'اتصال SSH به {host}:{ssh_port}')
+        conn = await open_ssh(host, ssh_port, username, password, private_key)
+        key = conn.get_server_host_key().get_fingerprint()
+        job_set(job_id, message=f'SSH برقرار شد؛ HostKey={key}')
+        probe = await conn.run('id -u && hostname', check=False)
+        if probe.exit_status != 0 or probe.stdout.splitlines()[0].strip() != '0':
+            raise RuntimeError('Provisioning نیاز به دسترسی root دارد')
+
+        job_set(job_id, message='نصب/به‌روزرسانی TP27 روی سرور خارج')
+        cmd = f'curl -fsSL {shlex.quote(RAW + "/install.sh")} | bash -s -- exit'
+        r = await conn.run(cmd, check=False, timeout=180)
+        if r.exit_status != 0:
+            raise RuntimeError((r.stderr or r.stdout or 'remote install failed').strip())
+
+        core = load_json(CORE_CONFIG)
+        eid, local_ip, remote_ip, auto_port = next_values(core)
+        if requested_id:
+            eid = validate_id(requested_id)
+            if any(x.get('id') == eid for x in core.get('exits', [])):
+                raise RuntimeError(f'{eid} قبلاً وجود دارد')
+        port = tunnel_port or auto_port
+        iface = iface_for(eid)
+        iran_ip = core.get('public_ip')
+        if not iran_ip:
+            raise RuntimeError('public_ip ایران در config نیست')
+
+        job_set(job_id, message=f'ساخت هویت mTLS برای {eid}')
+        client_cert, client_key = ensure_client_cert(eid, iran_ip)
+        remote_ca = f'/etc/tp27/certs/{eid}-iran.crt'
+        async with conn.start_sftp_client() as sftp:
+            await sftp.put(str(client_cert), remote_ca)
+
+        job_set(job_id, message='ساخت Endpoint خارجی')
+        remote_cmd = (f'tp27 exit-provision --id {shlex.quote(eid)} --listen-port {int(port)} '
+                      f'--tunnel-ip {shlex.quote(remote_ip)} --mtu {int(mtu)} '
+                      f'--client-ca {shlex.quote(remote_ca)}')
+        r = await conn.run(remote_cmd, check=False, timeout=60)
+        if r.exit_status != 0:
+            raise RuntimeError((r.stderr or r.stdout or 'exit provisioning failed').strip())
+
+        local_cert = CERTS / f'{eid}.crt'
+        async with conn.start_sftp_client() as sftp:
+            await sftp.get(f'/etc/tp27/certs/{eid}.crt', str(local_cert))
+        os.chmod(local_cert, 0o644)
+
+        remote_addr = str(ipaddress.ip_interface(remote_ip).ip)
+        exit_cfg = {'role':'iran','id':eid,'interface':iface,'tunnel_ip':local_ip,
+                    'remote_ip':remote_addr,'endpoint':host,'listen_port':port,'mtu':mtu,
+                    'ca_file':str(local_cert),'cert':str(client_cert),'key':str(client_key)}
+        atomic_json(EXITS / f'{eid}.json', exit_cfg)
+        rec = {'id':eid,'interface':iface,'endpoint':host,'port':port,
+               'local_ip':local_ip,'remote_ip':remote_addr}
+        core.setdefault('exits', [])
+        core['exits'] = [x for x in core['exits'] if x.get('id') != eid] + [rec]
+        atomic_json(CORE_CONFIG, core)
+
+        job_set(job_id, message='راه‌اندازی سرویس محلی')
+        run(['systemctl','daemon-reload'])
+        rc, out, err = run(['systemctl','enable','--now',f'tp27-link@{eid}.service'], check=False)
+        if rc != 0:
+            raise RuntimeError(err or out or 'local service failed')
+
+        job_set(job_id, message='Health Check مسیر L3')
+        online = False
+        for _ in range(20):
+            await asyncio.sleep(1)
+            rc, _, _ = run(['ping','-I',iface,'-c','1','-W','1',remote_addr], check=False)
+            if rc == 0:
+                online = True
+                break
+        if not online:
+            raise RuntimeError('سرویس ساخته شد اما Ping تونل پاسخ نداد')
+
+        result = {'id':eid,'interface':iface,'local_ip':local_ip,
+                  'remote_ip':remote_addr,'endpoint':host,'port':port}
+        job_set(job_id, state='done', message=f'{eid} ONLINE شد', result=result)
+    except Exception as e:
+        job_set(job_id, state='failed', message=f'خطا: {e}', error=str(e))
+    finally:
+        if conn:
+            conn.close()
+            try:
+                await conn.wait_closed()
+            except Exception:
+                pass
