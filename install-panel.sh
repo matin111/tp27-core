@@ -114,12 +114,22 @@ curl -fsSL "$RAW/panel/requirements.txt" -o /opt/tp27-panel/requirements.txt
 for f in app.py auth.py provision.py provision_password.py provision_agent.py agent_control.py ports.py portplan.py; do
   curl -fsSL "$RAW/panel/$f" -o "/opt/tp27-panel/$f"
 done
-for f in index.html login.html style.css app.js agent-manage.js; do
+for f in index.html login.html style.css app.js fast-ui.js agent-manage.js; do
   curl -fsSL "$RAW/panel/static/$f" -o "/opt/tp27-panel/static/$f"
 done
 curl -fsSL "$RAW/systemd/tp27-panel.service" -o "$PANEL_UNIT"
 curl -fsSL "$RAW/systemd/tp27-ports-reconcile.service" -o /etc/systemd/system/tp27-ports-reconcile.service
 chmod 600 /opt/tp27-panel/*.py
+
+/opt/tp27-panel/venv/bin/python -m py_compile \
+  /opt/tp27-panel/app.py \
+  /opt/tp27-panel/auth.py \
+  /opt/tp27-panel/provision.py \
+  /opt/tp27-panel/provision_password.py \
+  /opt/tp27-panel/provision_agent.py \
+  /opt/tp27-panel/agent_control.py \
+  /opt/tp27-panel/ports.py \
+  /opt/tp27-panel/portplan.py
 
 if [[ ! -s /etc/tp27/agent-enroll.token ]]; then
   python3 - <<'PY'
@@ -162,9 +172,6 @@ if [[ ! -f /etc/tp27/panel.key || ! -f /etc/tp27/panel.crt ]]; then
   chmod 644 /etc/tp27/panel.crt
 fi
 
-# The repository service file intentionally has a self-signed fallback. If a
-# valid trusted certificate already exists, patch it back in BEFORE restarting
-# the panel so upgrades never disconnect TLS-verifying agents.
 PREEXISTING_TRUSTED=0
 if valid_existing_cert; then
   PREEXISTING_TRUSTED=1
@@ -229,6 +236,7 @@ echo
 echo " Service: $(systemctl is-active tp27-panel.service || true)"
 echo " Port reconcile: $(systemctl is-active tp27-ports-reconcile.service || true)"
 echo " Agent controller: enabled"
+echo " Fast Pool: 4-channel flow-sticky mode enabled"
 if [[ "$SSL_STATE" == "trusted" ]]; then
   echo " Trusted IP certificate and automatic renewal: enabled"
 else
