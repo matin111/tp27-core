@@ -4,47 +4,37 @@ set -Eeuo pipefail
 ROLE="${1:-}"
 RAW="${TP27_REPO_RAW:-https://raw.githubusercontent.com/matin111/tp27-core/main}"
 
-if [[ "$EUID" -ne 0 ]]; then
-  echo "ERROR: run as root"
-  exit 1
-fi
-if [[ "$ROLE" != "iran" && "$ROLE" != "exit" ]]; then
-  echo "Usage: install.sh iran|exit"
-  exit 2
-fi
+[[ "$EUID" -eq 0 ]] || { echo "ERROR: run as root"; exit 1; }
+[[ "$ROLE" == "iran" || "$ROLE" == "exit" ]] || { echo "Usage: install.sh iran|exit"; exit 2; }
 
 export DEBIAN_FRONTEND=noninteractive
+
+echo "============================================================"
+echo " TP27 CORE v0.2"
+echo " ROLE: $ROLE"
+echo "============================================================"
+
 apt-get update
-apt-get install -y socat openssl iproute2 iptables jq curl ca-certificates python3 openssh-client
+apt-get install -y socat openssl iproute2 iptables jq curl ca-certificates python3 openssh-client iputils-ping
 
-install -d -m 700 /etc/tp27
-install -d -m 700 /etc/tp27/certs
-install -d -m 700 /etc/tp27/exits
-install -d -m 700 /etc/tp27/backups
-install -d -m 755 /var/lib/tp27
-install -d -m 755 /var/log/tp27
-install -d -m 755 /usr/local/lib/tp27
-install -d -m 755 /usr/local/bin
+install -d -m 700 /etc/tp27 /etc/tp27/certs /etc/tp27/exits /etc/tp27/backups
+install -d -m 755 /var/lib/tp27 /var/log/tp27 /usr/local/lib/tp27 /usr/local/bin
 
-# Migrate only the old TP27 WireGuard prototype. Never touch unrelated WG interfaces.
-if [[ -f /etc/tp27/config.json ]] && grep -q '"version"[[:space:]]*:[[:space:]]*1' /etc/tp27/config.json; then
-  TS="$(date +%Y%m%d-%H%M%S)"
-  cp -a /etc/tp27/config.json "/etc/tp27/backups/config.v1.${TS}.json"
-  while read -r IFACE; do
-    [[ -n "$IFACE" ]] || continue
-    systemctl disable --now "wg-quick@${IFACE}.service" 2>/dev/null || true
-    ip link del "$IFACE" 2>/dev/null || true
-    rm -f "/etc/wireguard/${IFACE}.conf"
-  done < <(ip -o link show | awk -F': ' '$2 ~ /^tp27exit/ {print $2}')
-  rm -rf /etc/tp27/keys/exits
+if [[ -f /etc/tp27/config.json ]]; then
+  cp -a /etc/tp27/config.json "/etc/tp27/backups/config.$(date +%Y%m%d-%H%M%S).json"
 fi
 
-curl -fsSL "${RAW}/bin/tp27.py" -o /usr/local/lib/tp27/tp27.py
-curl -fsSL "${RAW}/bin/tp27-link" -o /usr/local/lib/tp27/tp27-link
-curl -fsSL "${RAW}/systemd/tp27-link@.service" -o /etc/systemd/system/tp27-link@.service
+# Stop only the obsolete TP27 v0.1 monitor; unrelated VPN services are untouched.
+systemctl disable --now tp27-agent.service 2>/dev/null || true
 
+curl -fsSL "$RAW/bin/tp27-v2.py" -o /usr/local/lib/tp27/tp27.py
+curl -fsSL "$RAW/bin/tp27-link-mtls" -o /usr/local/lib/tp27/tp27-link
+curl -fsSL "$RAW/systemd/tp27-link@.service" -o /etc/systemd/system/tp27-link@.service
 chmod 755 /usr/local/lib/tp27/tp27.py /usr/local/lib/tp27/tp27-link
-ln -sf /usr/local/lib/tp27/tp27.py /usr/local/bin/tp27
+
+ln -sfn /usr/local/lib/tp27/tp27.py /usr/local/bin/tp27
+rm -f /usr/local/bin/tp27ctl
+ln -sfn /usr/local/lib/tp27/tp27.py /usr/local/bin/tp27ctl
 
 cat >/etc/sysctl.d/90-tp27.conf <<'EOF'
 net.ipv4.ip_forward=1
@@ -54,14 +44,9 @@ net.ipv4.conf.all.src_valid_mark=1
 EOF
 sysctl --system >/dev/null
 
-/usr/local/bin/tp27 bootstrap --role "$ROLE"
 systemctl daemon-reload
+tp27 bootstrap --role "$ROLE"
 
 echo
-echo "============================================================"
-echo " TP27 CORE v0.2 INSTALLED"
-echo " ROLE: ${ROLE}"
-echo "============================================================"
-echo "CLI: tp27"
-echo
+echo "TP27 v0.2 installed. CLI: tp27"
 tp27 status
