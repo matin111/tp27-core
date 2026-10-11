@@ -102,9 +102,9 @@ echo "============================================================"
 export DEBIAN_FRONTEND=noninteractive
 wait_for_apt
 apt-get update
-apt-get install -y python3-venv openssl curl ca-certificates iptables openssh-client sshpass
+apt-get install -y python3-venv openssl curl ca-certificates iptables openssh-client sshpass socat jq iproute2 iputils-ping
 
-install -d -m 755 /opt/tp27-panel /opt/tp27-panel/static
+install -d -m 755 /opt/tp27-panel /opt/tp27-panel/static /usr/local/lib/tp27
 install -d -m 700 /etc/tp27 /var/log/tp27/panel-jobs
 python3 -m venv /opt/tp27-panel/venv
 /opt/tp27-panel/venv/bin/pip install --upgrade pip >/dev/null
@@ -119,6 +119,12 @@ for f in index.html login.html style.css app.js fast-ui.js agent-manage.js; do
 done
 curl -fsSL "$RAW/systemd/tp27-panel.service" -o "$PANEL_UNIT"
 curl -fsSL "$RAW/systemd/tp27-ports-reconcile.service" -o /etc/systemd/system/tp27-ports-reconcile.service
+
+# Keep the local Iran data-plane binary in sync with the controller. This is
+# required for the reverse Exit->Iran transport roles.
+curl -fsSL "$RAW/bin/tp27-link-mtls" -o /usr/local/lib/tp27/tp27-link
+curl -fsSL "$RAW/systemd/tp27-link@.service" -o /etc/systemd/system/tp27-link@.service
+chmod 755 /usr/local/lib/tp27/tp27-link
 chmod 600 /opt/tp27-panel/*.py
 
 /opt/tp27-panel/venv/bin/python -m py_compile \
@@ -236,7 +242,7 @@ echo
 echo " Service: $(systemctl is-active tp27-panel.service || true)"
 echo " Port reconcile: $(systemctl is-active tp27-ports-reconcile.service || true)"
 echo " Agent controller: enabled"
-echo " Fast Pool: 4-channel flow-sticky mode enabled"
+echo " Reverse Fast Pool: Exit -> Iran mode enabled"
 if [[ "$SSL_STATE" == "trusted" ]]; then
   echo " Trusted IP certificate and automatic renewal: enabled"
 else
