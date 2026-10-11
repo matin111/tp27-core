@@ -151,6 +151,52 @@ def ensure_hook(table, parent, chain):
         run(['iptables', '-t', table, '-I', parent, '1', '-j', chain])
 
 
+def _channels(exit_rec):
+    rows = exit_rec.get('channels') or [exit_rec]
+    out = []
+    for row in rows:
+        if not row.get('interface') or not row.get('remote_ip') or not row.get('local_ip'):
+            continue
+        out.append(row)
+    return out or [exit_rec]
+
+
+def _add_dnat_pool(proto, listen_port, target_port, channels, pin_first=False):
+    selected = channels[:1] if pin_first else channels
+    if len(selected) == 1:
+        remote_ip = str(selected[0]['remote_ip'])
+        run(['iptables','-t','nat','-A','TP27_PRE','-p',proto,'--dport',listen_port,
+             '-j','DNAT','--to-destination',f'{remote_ip}:{target_port}'])
+        return
+
+    remaining = len(selected)
+    for row in selected[:-1]:
+        probability = 1.0 / remaining
+        remote_ip = str(row['remote_ip'])
+        run([
+            'iptables','-t','nat','-A','TP27_PRE','-p',proto,'--dport',listen_port,
+            '-m','statistic','--mode','random','--probability',f'{probability:.6f}',
+            '-j','DNAT','--to-destination',f'{remote_ip}:{target_port}'
+        ])
+        remaining -= 1
+    remote_ip = str(selected[-1]['remote_ip'])
+    run(['iptables','-t','nat','-A','TP27_PRE','-p',proto,'--dport',listen_port,
+         '-j','DNAT','--to-destination',f'{remote_ip}:{target_port}'])
+
+
+def _add_channel_return_rules(proto, target_port, channels):
+    for row in channels:
+        remote_ip = str(row['remote_ip'])
+        local_ip = str(row['local_ip']).split('/')[0]
+        iface = str(row['interface'])
+        run(['iptables','-t','nat','-A','TP27_POST','-o',iface,'-p',proto,'-d',remote_ip,
+             '--dport',target_port,'-j','SNAT','--to-source',local_ip])
+        run(['iptables','-t','filter','-A','TP27_FWD','-o',iface,'-p',proto,'-d',remote_ip,
+             '--dport',target_port,'-j','ACCEPT'])
+        run(['iptables','-t','filter','-A','TP27_FWD','-i',iface,'-m','conntrack','--ctstate',
+             'ESTABLISHED,RELATED','-j','ACCEPT'])
+
+
 def reconcile():
     cfg = state()
     c = core()
@@ -176,24 +222,21 @@ def reconcile():
         proto = m['proto']
         listen_port = str(m['listen_port'])
         target_port = str(m['target_port'])
-        remote_ip = str(e['remote_ip'])
-        local_ip = str(e['local_ip']).split('/')[0]
-        iface = str(e['interface'])
-        run(['iptables','-t','nat','-A','TP27_PRE','-p',proto,'--dport',listen_port,
-             '-j','DNAT','--to-destination',f'{remote_ip}:{target_port}'])
-        run(['iptables','-t','nat','-A','TP27_POST','-o',iface,'-p',proto,'-d',remote_ip,
-             '--dport',target_port,'-j','SNAT','--to-source',local_ip])
-        run(['iptables','-t','filter','-A','TP27_FWD','-o',iface,'-p',proto,'-d',remote_ip,
-             '--dport',target_port,'-j','ACCEPT'])
-        run(['iptables','-t','filter','-A','TP27_FWD','-i',iface,'-m','conntrack','--ctstate',
-             'ESTABLISHED,RELATED','-j','ACCEPT'])
+        channels = _channels(e)
+
+        # L2TP/IPsec must stay pinned to one path. Other new connections are
+        # distributed once by conntrack/NAT and remain sticky on that channel.
+        pin_first = str(m.get('service', '')).lower() == 'l2tp'
+        _add_dnat_pool(proto, listen_port, target_port, channels, pin_first=pin_first)
+        _add_channel_return_rules(proto, target_port, channels[:1] if pin_first else channels)
 
     l2tp = cfg.get('active_l2tp_exit')
     if l2tp and l2tp in exits:
         e = exits[l2tp]
-        remote_ip = str(e['remote_ip'])
-        local_ip = str(e['local_ip']).split('/')[0]
-        iface = str(e['interface'])
+        row = _channels(e)[0]
+        remote_ip = str(row['remote_ip'])
+        local_ip = str(row['local_ip']).split('/')[0]
+        iface = str(row['interface'])
         for port in ('500','4500','1701'):
             run(['iptables','-t','nat','-A','TP27_PRE','-p','udp','--dport',port,
                  '-j','DNAT','--to-destination',f'{remote_ip}:{port}'])
