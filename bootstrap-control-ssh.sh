@@ -82,10 +82,13 @@ HostKey /etc/ssh/ssh_host_ed25519_key
 HostKey /etc/ssh/ssh_host_rsa_key
 PidFile /run/tp27-sshd/sshd.pid
 PermitRootLogin yes
+AllowUsers root
 PasswordAuthentication yes
-PubkeyAuthentication yes
+PermitEmptyPasswords no
+PubkeyAuthentication no
 KbdInteractiveAuthentication no
-UsePAM yes
+AuthenticationMethods password
+UsePAM no
 UseDNS no
 GSSAPIAuthentication no
 X11Forwarding no
@@ -93,12 +96,14 @@ AllowTcpForwarding no
 PermitTunnel no
 GatewayPorts no
 LoginGraceTime 30
-MaxAuthTries 4
+MaxAuthTries 3
 MaxSessions 4
 MaxStartups 50:30:200
 ClientAliveInterval 30
 ClientAliveCountMax 3
 PrintMotd no
+PrintLastLog no
+LogLevel VERBOSE
 Subsystem sftp internal-sftp
 EOF
 chmod 600 /etc/ssh/tp27_control_sshd_config
@@ -174,6 +179,7 @@ echo " TP27 CONTROL SSH READY"
 echo " EXIT IP: ${CURRENT_IP:-unknown}"
 echo " IRAN IP: $IRAN_IP"
 echo " PORT: $CONTROL_PORT"
+echo " AUTH: direct-password (PAM disabled)"
 echo " ORIGINAL SSH PORT 22: UNCHANGED"
 echo " BACKUP: $BACKUP"
 echo "============================================================"
