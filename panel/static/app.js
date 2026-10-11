@@ -9,7 +9,7 @@ async function api(url,opt={}){
 }
 
 function mappingBadges(items=[]){
-  if(!items.length)return '<div class="muted tiny">بدون Port Mapping</div>';
+  if(!items.length)return '';
   return '<div class="badges">'+items.map(m=>`<span class="badge"><b>${esc(m.service)}</b> ${esc(String(m.proto).toUpperCase())} ${esc(m.listen_port)}→${esc(m.target_port)}</span>`).join('')+'</div>';
 }
 
@@ -26,7 +26,7 @@ async function loadStatus(){
           <div class="muted">${esc(x.endpoint)}:${esc(x.port)} · ${esc(x.interface)} · ${esc(x.remote_ip)}</div>
           ${mappingBadges(x.mappings)}
         </div>
-      </div>`).join(''):'<div class="muted">هنوز Exit اضافه نشده است.</div>';
+      </div>`).join(''):'<div class="muted">بدون تونل</div>';
   }catch(e){$('exitList').innerHTML='<div class="muted">'+esc(e.message)+'</div>'}
 }
 
@@ -46,9 +46,9 @@ function collectMappings(){
     const proto=row.querySelector('.p-proto').value;
     const listen_port=Number(row.querySelector('.p-iran').value);
     const target_port=Number(row.querySelector('.p-exit').value);
-    if(!service)throw new Error(`نام سرویس در ردیف ${i+1} خالی است`);
-    if(!listen_port||listen_port<1||listen_port>65535)throw new Error(`پورت ایران در ردیف ${i+1} نامعتبر است`);
-    if(!target_port||target_port<1||target_port>65535)throw new Error(`پورت خارج در ردیف ${i+1} نامعتبر است`);
+    if(!service)throw new Error(`نام سرویس ردیف ${i+1} خالی است`);
+    if(!listen_port||listen_port<1||listen_port>65535)throw new Error(`پورت ایران ردیف ${i+1} نامعتبر است`);
+    if(!target_port||target_port<1||target_port>65535)throw new Error(`پورت خارج ردیف ${i+1} نامعتبر است`);
     return{service,proto,listen_port,target_port};
   });
 }
@@ -92,18 +92,24 @@ function standardPorts(){
   ].forEach(addPortRow);
 }
 
+async function runPreflight(show=true){
+  const r=await api('/api/preflight',{method:'POST',body:JSON.stringify(sshPayload())});
+  if(!r.ok)throw new Error(r.error||r.stderr||'اتصال SSH ناموفق بود');
+  if(show)$('job').textContent='SSH: OK';
+  return r;
+}
+
 async function preflight(){
-  const j=$('job');j.textContent='در حال تست SSH...';
-  try{
-    const r=await api('/api/preflight',{method:'POST',body:JSON.stringify(sshPayload())});
-    j.textContent=r.ok?'اتصال موفق است · '+r.stdout+' · '+r.fingerprint:'اتصال ناموفق: '+(r.error||r.stderr);
-  }catch(e){j.textContent='اتصال ناموفق: '+e.message}
+  const j=$('job');j.textContent='تست SSH...';
+  try{await runPreflight(true)}catch(e){j.textContent='SSH: '+e.message}
 }
 
 async function addExit(){
   const j=$('job');
-  j.textContent='در حال بررسی پورت‌ها و شروع Provisioning...';
+  j.textContent='بررسی SSH...';
   try{
+    await runPreflight(false);
+    j.textContent='شروع ساخت تونل...';
     const p=payload();
     const r=await api('/api/exits',{method:'POST',body:JSON.stringify(p)});
     pollJob(r.job_id);
