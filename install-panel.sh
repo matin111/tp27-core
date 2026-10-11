@@ -70,7 +70,7 @@ python3 -m venv /opt/tp27-panel/venv
 curl -fsSL "$RAW/panel/requirements.txt" -o /opt/tp27-panel/requirements.txt
 /opt/tp27-panel/venv/bin/pip install -r /opt/tp27-panel/requirements.txt
 
-for f in app.py auth.py provision.py provision_password.py ports.py portplan.py; do
+for f in app.py auth.py provision.py provision_password.py provision_agent.py agent_control.py ports.py portplan.py; do
   curl -fsSL "$RAW/panel/$f" -o "/opt/tp27-panel/$f"
 done
 for f in index.html login.html style.css app.js; do
@@ -80,14 +80,15 @@ curl -fsSL "$RAW/systemd/tp27-panel.service" -o /etc/systemd/system/tp27-panel.s
 curl -fsSL "$RAW/systemd/tp27-ports-reconcile.service" -o /etc/systemd/system/tp27-ports-reconcile.service
 chmod 600 /opt/tp27-panel/*.py
 
-# Dedicated control-plane SSH identity. Private key never leaves the Iran node.
-CONTROL_KEY=/etc/tp27/control_ed25519
-if [[ ! -s "$CONTROL_KEY" || ! -s "${CONTROL_KEY}.pub" ]]; then
-  rm -f "$CONTROL_KEY" "${CONTROL_KEY}.pub"
-  ssh-keygen -q -t ed25519 -N '' -C "tp27-control@$IP" -f "$CONTROL_KEY"
+if [[ ! -s /etc/tp27/agent-enroll.token ]]; then
+  python3 - <<'PY'
+import secrets
+from pathlib import Path
+p=Path('/etc/tp27/agent-enroll.token')
+p.write_text(secrets.token_urlsafe(32)+'\n')
+p.chmod(0o600)
+PY
 fi
-chmod 600 "$CONTROL_KEY"
-chmod 644 "${CONTROL_KEY}.pub"
 
 NEW_PASSWORD=""
 if [[ ! -f /etc/tp27/panel.json ]]; then
@@ -164,7 +165,7 @@ fi
 echo
 echo " Service: $(systemctl is-active tp27-panel.service || true)"
 echo " Port reconcile: $(systemctl is-active tp27-ports-reconcile.service || true)"
-echo " Control key: ready"
+echo " Agent controller: enabled"
 if [[ "$SSL_STATE" == "trusted" ]]; then
   echo " Trusted IP certificate and automatic renewal: enabled"
 else
