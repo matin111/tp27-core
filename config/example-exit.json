@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "role": "exit",
+  "node_id": "exit-01",
+  "public_iface": "ens18",
+  "public_ip": "168.222.49.180",
+  "exit": {}
+}
