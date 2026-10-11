@@ -25,6 +25,7 @@ ALLOWED_ACTIONS = {
     'status',
     'provision_exit',
     'restart_link',
+    'delete_exit',
 }
 
 router = APIRouter()
