@@ -15,7 +15,7 @@ if not 1 <= p <= 65535:
     raise SystemExit('invalid port')
 PY
 
-# Guard: this bootstrap belongs on the FOREIGN/EXIT server only.
+# This bootstrap belongs on the FOREIGN/EXIT server only.
 CURRENT_IP="$(curl -4 -fsS --max-time 5 https://ifconfig.me 2>/dev/null || true)"
 if [[ -z "$CURRENT_IP" ]]; then
   CURRENT_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
@@ -37,22 +37,40 @@ cp -a /etc/ssh/sshd_config "$BACKUP/sshd_config"
 [[ -f /etc/ssh/tp27_control_sshd_config ]] && cp -a /etc/ssh/tp27_control_sshd_config "$BACKUP/" || true
 [[ -f /etc/systemd/system/tp27-control-sshd.service ]] && cp -a /etc/systemd/system/tp27-control-sshd.service "$BACKUP/" || true
 [[ -f /etc/systemd/system/tp27-control-firewall.service ]] && cp -a /etc/systemd/system/tp27-control-firewall.service "$BACKUP/" || true
+[[ -f /usr/local/lib/tp27/control-firewall.sh ]] && cp -a /usr/local/lib/tp27/control-firewall.sh "$BACKUP/" || true
 
 install -d -m 755 /usr/local/lib/tp27
+install -d -m 700 /etc/tp27
 
-cat >/usr/local/lib/tp27/control-firewall.sh <<EOF
+cat >/etc/tp27/control-ssh.env <<EOF
+IRAN_IP=$IRAN_IP
+CONTROL_PORT=$CONTROL_PORT
+EOF
+chmod 600 /etc/tp27/control-ssh.env
+
+cat >/usr/local/lib/tp27/control-firewall.sh <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-IRAN_IP='$IRAN_IP'
-PORT='$CONTROL_PORT'
+source /etc/tp27/control-ssh.env
 CHAIN='TP27_SSH_IN'
+PORT="$CONTROL_PORT"
 
-iptables -N "$CHAIN" 2>/dev/null || true
-iptables -F "$CHAIN"
-iptables -A "$CHAIN" -p tcp -s "$IRAN_IP" --dport "$PORT" -j ACCEPT
-iptables -A "$CHAIN" -p tcp --dport "$PORT" -j DROP
-iptables -C INPUT -p tcp --dport "$PORT" -j "$CHAIN" 2>/dev/null || \
-  iptables -I INPUT 1 -p tcp --dport "$PORT" -j "$CHAIN"
+# Only our dedicated TP27 chain/hook is reconciled. No global flush.
+iptables -w 5 -N "$CHAIN" 2>/dev/null || true
+
+# Remove stale INPUT hooks to this TP27-only chain, then rebuild one clean hook.
+while iptables -w 5 -C INPUT -j "$CHAIN" 2>/dev/null; do
+  iptables -w 5 -D INPUT -j "$CHAIN"
+done
+# Also remove older port-specific hooks created by previous TP27 bootstrap versions.
+while iptables -w 5 -C INPUT -p tcp --dport "$PORT" -j "$CHAIN" 2>/dev/null; do
+  iptables -w 5 -D INPUT -p tcp --dport "$PORT" -j "$CHAIN"
+done
+
+iptables -w 5 -F "$CHAIN"
+iptables -w 5 -A "$CHAIN" -p tcp -s "$IRAN_IP" --dport "$PORT" -j ACCEPT
+iptables -w 5 -A "$CHAIN" -p tcp --dport "$PORT" -j DROP
+iptables -w 5 -I INPUT 1 -p tcp --dport "$PORT" -j "$CHAIN"
 EOF
 chmod 700 /usr/local/lib/tp27/control-firewall.sh
 
@@ -68,6 +86,7 @@ PasswordAuthentication yes
 PubkeyAuthentication yes
 KbdInteractiveAuthentication no
 UsePAM yes
+UseDNS no
 GSSAPIAuthentication no
 X11Forwarding no
 AllowTcpForwarding no
@@ -79,6 +98,7 @@ MaxSessions 4
 MaxStartups 50:30:200
 ClientAliveInterval 30
 ClientAliveCountMax 3
+PrintMotd no
 Subsystem sftp internal-sftp
 EOF
 chmod 600 /etc/ssh/tp27_control_sshd_config
@@ -88,7 +108,8 @@ chmod 600 /etc/ssh/tp27_control_sshd_config
 cat >/etc/systemd/system/tp27-control-firewall.service <<'EOF'
 [Unit]
 Description=TP27 Control SSH firewall
-After=network-pre.target
+After=network-online.target
+Wants=network-online.target
 Before=tp27-control-sshd.service
 
 [Service]
@@ -121,6 +142,7 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
+systemctl reset-failed tp27-control-firewall.service tp27-control-sshd.service 2>/dev/null || true
 systemctl enable tp27-control-firewall.service >/dev/null
 systemctl restart tp27-control-firewall.service
 systemctl enable tp27-control-sshd.service >/dev/null
