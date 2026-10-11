@@ -18,8 +18,8 @@
 
   <section class="stats">
     <article class="card"><span class="muted">IP ایران</span><strong id="publicIp">-</strong></article>
-    <article class="card"><span class="muted">Agent</span><strong id="agentCount">0</strong></article>
-    <article class="card"><span class="muted">خروجی‌ها</span><strong id="exitCount">0</strong></article>
+    <article class="card"><span class="muted">سرورهای خارج</span><strong id="agentCount">0</strong></article>
+    <article class="card"><span class="muted">تونل‌ها</span><strong id="exitCount">0</strong></article>
     <article class="card"><span class="muted">آنلاین</span><strong id="onlineCount">0</strong></article>
   </section>
 
@@ -27,13 +27,9 @@
     <section class="card">
       <div class="section-title">
         <h3>سرورهای خارج</h3>
-        <div class="actions">
-          <button class="btn small" type="button" onclick="showEnrollment()">توکن اتصال</button>
-          <button class="btn small" type="button" onclick="rotateEnrollment()">توکن جدید</button>
-        </div>
+        <button class="btn small primary" type="button" onclick="openServerWizard()">+ افزودن سرور خارج</button>
       </div>
       <div id="agentList"><div class="muted">در حال دریافت...</div></div>
-      <div id="enrollmentBox" class="job muted hidden"></div>
     </section>
 
     <section class="card">
@@ -44,22 +40,13 @@
     <section class="card builder">
       <h3>ساخت تونل</h3>
 
-      <div class="form-grid">
-        <label>Agent خارج<select id="agentId"><option value="">SSH دستی</option></select></label>
-        <label>IP سرور خارج<input id="host" placeholder="168.222.49.180"></label>
+      <div class="form-grid tunnel-grid">
+        <label>سرور خارج
+          <select id="agentId"><option value="">انتخاب سرور</option></select>
+        </label>
         <label>شناسه<input id="exitId" placeholder="exit01"></label>
         <label>پورت Tunnel<input id="tunnelPort" type="number" placeholder="خودکار"></label>
       </div>
-
-      <details class="ssh-fallback" id="sshFallback">
-        <summary>SSH دستی</summary>
-        <div class="form-grid">
-          <label>پورت SSH<input id="sshPort" type="number" value="22"></label>
-          <label>کاربر SSH<input id="sshUser" value="root"></label>
-          <label>رمز SSH<input id="password" type="password" autocomplete="new-password"></label>
-        </div>
-        <label>Private Key<textarea id="privateKey" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label>
-      </details>
 
       <div class="ports-title">
         <h4>پورت‌ها</h4>
@@ -75,13 +62,48 @@
       <div id="portRows"></div>
 
       <div class="row buttons">
-        <button class="btn" onclick="preflight()">تست اتصال</button>
+        <button class="btn" onclick="preflight()">بررسی سرور</button>
         <button class="btn primary" onclick="addExit()">ساخت تونل</button>
       </div>
       <div id="job" class="job muted">آماده</div>
     </section>
   </main>
 </div>
+
+<div id="serverWizard" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="wizardTitle">
+  <div class="modal-card">
+    <div class="section-title modal-head">
+      <h3 id="wizardTitle">افزودن سرور خارج</h3>
+      <button class="btn small" type="button" onclick="closeServerWizard()">×</button>
+    </div>
+
+    <div id="wizardWaiting">
+      <div class="wizard-status">
+        <span id="wizardDot" class="dot bad"></span>
+        <strong id="wizardStatus">در حال آماده‌سازی...</strong>
+      </div>
+
+      <div class="command-box">
+        <code id="installCommand"></code>
+      </div>
+
+      <div class="actions wizard-actions">
+        <button class="btn primary" type="button" onclick="copyInstallCommand()">کپی دستور نصب</button>
+        <button class="btn" type="button" onclick="checkEnrollmentNow()">بررسی اتصال</button>
+      </div>
+    </div>
+
+    <div id="wizardReady" class="hidden">
+      <div class="success-box">
+        <span class="dot good"></span>
+        <strong id="readyAgentName">سرور متصل شد</strong>
+        <div id="readyAgentMeta" class="muted"></div>
+      </div>
+      <button class="btn primary full" type="button" onclick="useReadyAgent()">ساخت تونل برای این سرور</button>
+    </div>
+  </div>
+</div>
+
 <script src="/static/app.js"></script>
 </body>
 </html>
