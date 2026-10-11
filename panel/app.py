@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from agent_control import get_agent, router as agent_router
+from agent_control import get_agent, queue_command, router as agent_router, wait_command
 from auth import make_session, session_ok, verify_password
 from provision import CORE_CONFIG, JOBS, load_json, preflight, provision, run, validate_id
 from provision_agent import provision_via_agent
@@ -35,6 +35,64 @@ def guard(request: Request):
 
 def html(name):
     return (BASE / 'static' / name).read_text(encoding='utf-8')
+
+
+def find_exit(exit_id: str):
+    cfg = load_json(CORE_CONFIG)
+    for item in cfg.get('exits', []):
+        if item.get('id') == exit_id:
+            return item
+    return None
+
+
+async def diagnose_exit_record(item: dict):
+    eid = item.get('id', '')
+    iface = item.get('interface', '')
+    remote_ip = item.get('remote_ip', '')
+
+    svc_rc, svc_out, svc_err = run(
+        ['systemctl', 'is-active', f'tp27-link@{eid}.service'], check=False
+    )
+    iface_rc, _, _ = run(['ip', 'link', 'show', iface], check=False) if iface else (1, '', '')
+    ping_rc = 1
+    if iface and remote_ip:
+        ping_rc, _, _ = run(
+            ['ping', '-I', iface, '-c', '1', '-W', '1', remote_ip], check=False
+        )
+
+    log_rc, log_out, log_err = run([
+        'journalctl', '-u', f'tp27-link@{eid}.service',
+        '-n', '18', '--no-pager', '-o', 'cat'
+    ], check=False)
+    local_log = (log_out or log_err or '').strip()
+    if len(local_log) > 3500:
+        local_log = local_log[-3500:]
+
+    agent = get_agent(item.get('agent_id', '')) if item.get('agent_id') else None
+    remote_status = ''
+    if agent:
+        remote_status = str((agent.get('status') or {}).get('tp27') or '')
+        if len(remote_status) > 3500:
+            remote_status = remote_status[-3500:]
+
+    healthy = svc_rc == 0 and iface_rc == 0 and ping_rc == 0
+    return {
+        'id': eid,
+        'healthy': healthy,
+        'local_service': svc_rc == 0,
+        'interface_up': iface_rc == 0,
+        'peer_ping': ping_rc == 0,
+        'endpoint': item.get('endpoint'),
+        'port': item.get('port'),
+        'interface': iface,
+        'remote_ip': remote_ip,
+        'agent_id': item.get('agent_id'),
+        'agent_online': bool(agent and agent.get('online')),
+        'agent_hostname': (agent or {}).get('hostname'),
+        'local_log': local_log,
+        'remote_status': remote_status,
+        'service_text': (svc_out or svc_err or '').strip(),
+    }
 
 
 class SSHProbe(BaseModel):
@@ -127,6 +185,48 @@ async def status(request: Request):
     return {'version': cfg.get('version'), 'role': cfg.get('role'),
             'public_ip': cfg.get('public_ip'), 'exits': rows,
             'active_l2tp_exit': pstate.get('active_l2tp_exit')}
+
+
+@app.get('/api/exits/{exit_id}/diagnose')
+async def diagnose_exit(request: Request, exit_id: str):
+    guard(request)
+    validate_id(exit_id)
+    item = find_exit(exit_id)
+    if not item:
+        raise HTTPException(status_code=404, detail='تونل پیدا نشد')
+    return await diagnose_exit_record(item)
+
+
+@app.post('/api/exits/{exit_id}/repair')
+async def repair_exit(request: Request, exit_id: str):
+    guard(request)
+    validate_id(exit_id)
+    item = find_exit(exit_id)
+    if not item:
+        raise HTTPException(status_code=404, detail='تونل پیدا نشد')
+
+    agent_id = item.get('agent_id')
+    if agent_id:
+        agent = get_agent(agent_id)
+        if not agent or not agent.get('online'):
+            raise HTTPException(status_code=400, detail='Agent سرور خارج آفلاین است')
+        try:
+            command = queue_command(agent_id, 'restart_link', {'id': exit_id})
+            result = await wait_command(command['id'], timeout=45)
+            if result.get('state') != 'done' or not result.get('ok'):
+                raise RuntimeError(result.get('error') or 'Restart سرور خارج ناموفق بود')
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    rc, out, err = run(['systemctl', 'restart', f'tp27-link@{exit_id}.service'], check=False)
+    if rc != 0:
+        raise HTTPException(status_code=400, detail=err or out or 'Restart ایران ناموفق بود')
+
+    await asyncio.sleep(4)
+    item = find_exit(exit_id)
+    result = await diagnose_exit_record(item)
+    result['repaired'] = result.get('healthy', False)
+    return result
 
 
 async def do_preflight(body: SSHProbe):
