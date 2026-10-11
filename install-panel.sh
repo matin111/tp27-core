@@ -80,6 +80,15 @@ curl -fsSL "$RAW/systemd/tp27-panel.service" -o /etc/systemd/system/tp27-panel.s
 curl -fsSL "$RAW/systemd/tp27-ports-reconcile.service" -o /etc/systemd/system/tp27-ports-reconcile.service
 chmod 600 /opt/tp27-panel/*.py
 
+# Dedicated control-plane SSH identity. Private key never leaves the Iran node.
+CONTROL_KEY=/etc/tp27/control_ed25519
+if [[ ! -s "$CONTROL_KEY" || ! -s "${CONTROL_KEY}.pub" ]]; then
+  rm -f "$CONTROL_KEY" "${CONTROL_KEY}.pub"
+  ssh-keygen -q -t ed25519 -N '' -C "tp27-control@$IP" -f "$CONTROL_KEY"
+fi
+chmod 600 "$CONTROL_KEY"
+chmod 644 "${CONTROL_KEY}.pub"
+
 NEW_PASSWORD=""
 if [[ ! -f /etc/tp27/panel.json ]]; then
   NEW_PASSWORD="$(python3 - <<'PY'
@@ -155,7 +164,7 @@ fi
 echo
 echo " Service: $(systemctl is-active tp27-panel.service || true)"
 echo " Port reconcile: $(systemctl is-active tp27-ports-reconcile.service || true)"
-echo " SSH backend: OpenSSH + sshpass for password authentication"
+echo " Control key: ready"
 if [[ "$SSL_STATE" == "trusted" ]]; then
   echo " Trusted IP certificate and automatic renewal: enabled"
 else
