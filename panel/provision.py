@@ -96,7 +96,7 @@ def job_set(job_id, state=None, message=None, error=None, result=None):
     return j
 
 
-def ssh_error_text(exc):
+def ssh_error_text(exc, tcp_ok=False, banner_ok=False):
     name = exc.__class__.__name__
     raw = str(exc).strip()
     low = raw.lower()
@@ -105,10 +105,14 @@ def ssh_error_text(exc):
         return 'احراز هویت SSH رد شد؛ نام کاربری/رمز یا Private Key را بررسی کنید.'
     if name in {'ConnectionLost', 'DisconnectError'} or 'connection closed' in low or 'connection lost' in low:
         return 'سرور خارج اتصال SSH را قبل از تکمیل ورود بست. sshd/MaxStartups/ACL و لاگ SSH سرور خارج را بررسی کنید.'
-    if name in {'ConnectionRefusedError'} or 'connection refused' in low:
+    if name == 'ConnectionRefusedError' or 'connection refused' in low:
         return 'پورت SSH روی سرور خارج اتصال را رد کرد.'
-    if name in {'TimeoutError', 'TimeoutError'} or 'timed out' in low or 'timeout' in low:
-        return 'اتصال SSH Timeout شد؛ IP، پورت و Firewall مسیر را بررسی کنید.'
+    if name == 'TimeoutError' or 'timed out' in low or 'timeout' in low:
+        if tcp_ok and banner_ok:
+            return 'TCP و SSH Banner سالم است اما مرحله احراز هویت Timeout شد؛ مشکل از Firewall مسیر نیست. sshd/PAM/MaxStartups یا روش Authentication سرور خارج را بررسی کنید.'
+        if tcp_ok:
+            return 'TCP وصل شد اما SSH Banner دریافت نشد؛ سرویس یا لایه ورودی SSH سرور خارج پاسخ کامل نمی‌دهد.'
+        return 'اتصال TCP به پورت SSH Timeout شد؛ IP، پورت و Firewall مسیر را بررسی کنید.'
     if 'no matching' in low:
         return f'الگوریتم SSH مشترک پیدا نشد: {raw}'
     if isinstance(exc, OSError):
@@ -117,48 +121,144 @@ def ssh_error_text(exc):
     return f'{name}: {raw}' if raw else f'{name}: اتصال SSH ناموفق بود و سرور جزئیات بیشتری برنگرداند.'
 
 
-async def open_ssh(host, port, username, password=None, private_key=None):
-    kwargs = dict(host=host, port=port, username=username, known_hosts=None,
-                  connect_timeout=12, login_timeout=18)
+async def ssh_banner_probe(host, port):
+    writer = None
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=6)
+        line = await asyncio.wait_for(reader.readline(), timeout=6)
+        banner = line.decode('utf-8', 'replace').strip()
+        return {'tcp_ok': True, 'banner_ok': banner.startswith('SSH-'), 'banner': banner}
+    except Exception as exc:
+        return {'tcp_ok': False, 'banner_ok': False, 'banner': '', 'exception': exc}
+    finally:
+        if writer:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
 
-    # If a password was supplied, do not waste attempts on local agent/default keys.
-    # This also makes errors deterministic on servers with strict MaxAuthTries.
+
+def ssh_options(host, port, username, password=None, private_key=None):
+    kwargs = dict(
+        host=host,
+        port=port,
+        username=username,
+        known_hosts=None,
+        connect_timeout=10,
+        login_timeout=35,
+        keepalive_interval=10,
+        keepalive_count_max=3,
+        gss_auth=False,
+        gss_kex=False,
+        host_based_auth=False,
+        agent_path=None,
+    )
+
     if password and not private_key:
-        kwargs['password'] = password
-        kwargs['client_keys'] = []
-        kwargs['agent_path'] = None
+        kwargs.update(
+            password=password,
+            client_keys=[],
+            public_key_auth=False,
+            kbdint_auth=False,
+            password_auth=True,
+            preferred_auth=['password'],
+        )
     elif private_key:
-        kwargs['client_keys'] = [asyncssh.import_private_key(private_key)]
-        kwargs['agent_path'] = None
+        kwargs.update(
+            client_keys=[asyncssh.import_private_key(private_key)],
+            public_key_auth=True,
+            preferred_auth=['publickey', 'password'] if password else ['publickey'],
+        )
         if password:
             kwargs['password'] = password
+            kwargs['password_auth'] = True
+            kwargs['kbdint_auth'] = False
     elif password:
-        kwargs['password'] = password
+        kwargs.update(password=password, preferred_auth=['password'])
 
-    return await asyncssh.connect(**kwargs)
+    return kwargs
+
+
+async def open_ssh(host, port, username, password=None, private_key=None):
+    last = None
+    for attempt in range(2):
+        try:
+            return await asyncssh.connect(**ssh_options(host, port, username, password, private_key))
+        except asyncssh.PermissionDenied:
+            raise
+        except Exception as exc:
+            last = exc
+            if attempt == 0:
+                await asyncio.sleep(2)
+    raise last
 
 
 async def preflight(host, port, username, password=None, private_key=None):
     if not password and not private_key:
         return {'ok': False, 'error': 'رمز SSH یا Private Key لازم است.', 'error_type': 'MissingCredential'}
 
+    stage = await ssh_banner_probe(host, port)
+    if not stage.get('tcp_ok'):
+        exc = stage.get('exception') or TimeoutError('TCP probe failed')
+        return {
+            'ok': False,
+            'stage': 'tcp',
+            'error': ssh_error_text(exc, tcp_ok=False, banner_ok=False),
+            'error_type': exc.__class__.__name__,
+        }
+    if not stage.get('banner_ok'):
+        return {
+            'ok': False,
+            'stage': 'banner',
+            'error': f"TCP وصل شد ولی پاسخ SSH معتبر نبود: {stage.get('banner') or 'بدون Banner'}",
+            'banner': stage.get('banner', ''),
+        }
+
     conn = None
     try:
         conn = await open_ssh(host, port, username, password, private_key)
         key = conn.get_server_host_key().get_fingerprint()
-        r = await conn.run('printf "TP27_OK\\n"; id -u; hostname', check=False, timeout=12)
+        r = await conn.run('printf "TP27_OK\\n"; id -u; hostname', check=False, timeout=15)
         lines = [x.strip() for x in r.stdout.splitlines() if x.strip()]
         is_root = len(lines) >= 2 and lines[1] == '0'
         if r.exit_status != 0:
-            return {'ok': False, 'error': (r.stderr or 'فرمان تست SSH اجرا نشد').strip(),
-                    'fingerprint': key, 'stdout': r.stdout.strip(), 'stderr': r.stderr.strip()}
+            return {
+                'ok': False,
+                'stage': 'command',
+                'error': (r.stderr or 'فرمان تست SSH اجرا نشد').strip(),
+                'fingerprint': key,
+                'stdout': r.stdout.strip(),
+                'stderr': r.stderr.strip(),
+                'banner': stage.get('banner', ''),
+            }
         if not is_root:
-            return {'ok': False, 'error': 'اتصال SSH برقرار شد اما کاربر دسترسی root ندارد.',
-                    'fingerprint': key, 'stdout': r.stdout.strip(), 'stderr': r.stderr.strip()}
-        return {'ok': True, 'fingerprint': key, 'stdout': r.stdout.strip(),
-                'stderr': r.stderr.strip(), 'auth': 'private-key' if private_key else 'password'}
+            return {
+                'ok': False,
+                'stage': 'privilege',
+                'error': 'اتصال SSH برقرار شد اما کاربر دسترسی root ندارد.',
+                'fingerprint': key,
+                'stdout': r.stdout.strip(),
+                'stderr': r.stderr.strip(),
+                'banner': stage.get('banner', ''),
+            }
+        return {
+            'ok': True,
+            'stage': 'ready',
+            'fingerprint': key,
+            'stdout': r.stdout.strip(),
+            'stderr': r.stderr.strip(),
+            'auth': 'private-key' if private_key else 'password',
+            'banner': stage.get('banner', ''),
+        }
     except Exception as exc:
-        return {'ok': False, 'error': ssh_error_text(exc), 'error_type': exc.__class__.__name__}
+        return {
+            'ok': False,
+            'stage': 'auth',
+            'error': ssh_error_text(exc, tcp_ok=True, banner_ok=True),
+            'error_type': exc.__class__.__name__,
+            'banner': stage.get('banner', ''),
+        }
     finally:
         if conn:
             conn.close()
@@ -176,7 +276,7 @@ async def provision(job_id, host, ssh_port, username, password, private_key,
         conn = await open_ssh(host, ssh_port, username, password, private_key)
         key = conn.get_server_host_key().get_fingerprint()
         job_set(job_id, message=f'SSH برقرار شد؛ HostKey={key}')
-        probe = await conn.run('id -u && hostname', check=False, timeout=12)
+        probe = await conn.run('id -u && hostname', check=False, timeout=15)
         lines = [x.strip() for x in probe.stdout.splitlines() if x.strip()]
         if probe.exit_status != 0 or not lines or lines[0] != '0':
             raise RuntimeError('Provisioning نیاز به دسترسی root دارد')
@@ -223,12 +323,16 @@ async def provision(job_id, host, ssh_port, username, password, private_key,
         os.chmod(local_cert, 0o644)
 
         remote_addr = str(ipaddress.ip_interface(remote_ip).ip)
-        exit_cfg = {'role':'iran','id':eid,'interface':iface,'tunnel_ip':local_ip,
-                    'remote_ip':remote_addr,'endpoint':host,'listen_port':port,'mtu':mtu,
-                    'ca_file':str(local_cert),'cert':str(client_cert),'key':str(client_key)}
+        exit_cfg = {
+            'role':'iran','id':eid,'interface':iface,'tunnel_ip':local_ip,
+            'remote_ip':remote_addr,'endpoint':host,'listen_port':port,'mtu':mtu,
+            'ca_file':str(local_cert),'cert':str(client_cert),'key':str(client_key)
+        }
         atomic_json(EXITS / f'{eid}.json', exit_cfg)
-        rec = {'id':eid,'interface':iface,'endpoint':host,'port':port,
-               'local_ip':local_ip,'remote_ip':remote_addr}
+        rec = {
+            'id':eid,'interface':iface,'endpoint':host,'port':port,
+            'local_ip':local_ip,'remote_ip':remote_addr
+        }
         core.setdefault('exits', [])
         core['exits'] = [x for x in core['exits'] if x.get('id') != eid] + [rec]
         atomic_json(CORE_CONFIG, core)
@@ -256,9 +360,11 @@ async def provision(job_id, host, ssh_port, username, password, private_key,
             applied = apply_plan(eid, port_plan)
             job_set(job_id, message=f'{len(applied)} Port Mapping فعال شد')
 
-        result = {'id':eid,'interface':iface,'local_ip':local_ip,
-                  'remote_ip':remote_addr,'endpoint':host,'port':port,
-                  'mappings': applied}
+        result = {
+            'id':eid,'interface':iface,'local_ip':local_ip,
+            'remote_ip':remote_addr,'endpoint':host,'port':port,
+            'mappings': applied
+        }
         job_set(job_id, state='done', message=f'{eid} ONLINE شد', result=result)
     except Exception as exc:
         detail = ssh_error_text(exc) if exc.__class__.__name__ in {
