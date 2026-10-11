@@ -1,1 +1,80 @@
-<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TP27 Control</title><link rel="stylesheet" href="/static/style.css"></head><body><div class="wrap"><header class="top"><div><div class="logo">TP27 <b>Control</b></div><div class="muted">پنل مستقل مدیریت تونل</div></div><div class="actions"><button class="btn" onclick="loadStatus()">بروزرسانی</button><a class="btn link" href="/logout">خروج</a></div></header><section class="stats"><article class="card"><span class="muted">IP ایران</span><strong id="publicIp">-</strong></article><article class="card"><span class="muted">خروجی‌ها</span><strong id="exitCount">0</strong></article><article class="card"><span class="muted">آنلاین</span><strong id="onlineCount">0</strong></article></section><main class="main"><section class="card"><div class="section-title"><h3>تونل‌ها</h3><span class="muted">Health هر ۱۰ ثانیه بروزرسانی می‌شود</span></div><div id="exitList"><div class="muted">در حال دریافت...</div></div></section><aside class="card"><h3>افزودن سرور خارج</h3><p class="muted">Credential فقط برای همین عملیات استفاده می‌شود و ذخیره نمی‌شود.</p><label>IP سرور خارج<input id="host" placeholder="168.222.49.180"></label><div class="row"><label>پورت SSH<input id="sshPort" type="number" value="22"></label><label>کاربر SSH<input id="sshUser" value="root"></label></div><label>شناسه اختیاری<input id="exitId" placeholder="exit01"></label><label>رمز SSH<input id="password" type="password" autocomplete="new-password"></label><label>یا Private Key<textarea id="privateKey" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label><div class="row buttons"><button class="btn" onclick="preflight()">تست اتصال</button><button class="btn primary" onclick="addExit()">نصب و اتصال خودکار</button></div><div id="job" class="job muted">هنوز عملیاتی شروع نشده است.</div></aside></main></div><script src="/static/app.js"></script></body></html>
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>TP27 Control</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div>
+      <div class="logo">TP27 <b>Control</b></div>
+      <div class="muted">پنل مستقل مدیریت تونل چند سروره</div>
+    </div>
+    <div class="actions">
+      <button class="btn" onclick="loadStatus()">بروزرسانی</button>
+      <a class="btn link" href="/logout">خروج</a>
+    </div>
+  </header>
+
+  <section class="stats">
+    <article class="card"><span class="muted">IP ایران</span><strong id="publicIp">-</strong></article>
+    <article class="card"><span class="muted">خروجی‌ها</span><strong id="exitCount">0</strong></article>
+    <article class="card"><span class="muted">آنلاین</span><strong id="onlineCount">0</strong></article>
+  </section>
+
+  <main class="main">
+    <section class="card">
+      <div class="section-title">
+        <h3>تونل‌ها و پورت‌ها</h3>
+        <span class="muted">Health هر ۱۰ ثانیه بروزرسانی می‌شود</span>
+      </div>
+      <div id="exitList"><div class="muted">در حال دریافت...</div></div>
+    </section>
+
+    <aside class="card builder">
+      <h3>ساخت تونل جدید</h3>
+      <p class="muted">Credential فقط برای همین عملیات استفاده می‌شود و ذخیره نمی‌شود.</p>
+
+      <label>IP سرور خارج<input id="host" placeholder="168.222.49.180"></label>
+      <div class="row">
+        <label>پورت SSH<input id="sshPort" type="number" value="22"></label>
+        <label>کاربر SSH<input id="sshUser" value="root"></label>
+      </div>
+      <div class="row">
+        <label>شناسه اختیاری<input id="exitId" placeholder="exit01"></label>
+        <label>پورت خود Tunnel <span class="hint">اختیاری</span><input id="tunnelPort" type="number" placeholder="خودکار"></label>
+      </div>
+      <label>رمز SSH<input id="password" type="password" autocomplete="new-password"></label>
+      <label>یا Private Key<textarea id="privateKey" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label>
+
+      <div class="ports-title">
+        <div>
+          <h4>پورت‌های سرویس</h4>
+          <div class="muted">پیش‌فرض پورت ایران و خارج یکسان است. هر ردیف را می‌توانی دستی تغییر یا حذف کنی.</div>
+        </div>
+        <div class="actions">
+          <button class="btn small" type="button" onclick="standardPorts()">پورت‌های استاندارد</button>
+          <button class="btn small primary" type="button" onclick="addPortRow()">+ پورت جدید</button>
+        </div>
+      </div>
+
+      <div class="port-head">
+        <span>سرویس</span><span>نوع</span><span>پورت ایران</span><span>پورت خارج</span><span></span>
+      </div>
+      <div id="portRows"></div>
+      <div class="muted port-note">Cisco، OpenVPN، WireGuard، L2TP یا هر سرویس TCP/UDP دیگری قابل اضافه‌کردن است.</div>
+
+      <div class="row buttons">
+        <button class="btn" onclick="preflight()">تست اتصال SSH</button>
+        <button class="btn primary" onclick="addExit()">نصب و اتصال خودکار</button>
+      </div>
+      <div id="job" class="job muted">هنوز عملیاتی شروع نشده است.</div>
+    </aside>
+  </main>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
