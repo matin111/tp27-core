@@ -102,7 +102,7 @@ echo "============================================================"
 export DEBIAN_FRONTEND=noninteractive
 wait_for_apt
 apt-get update
-apt-get install -y python3-venv openssl curl ca-certificates iptables openssh-client sshpass socat jq iproute2 iputils-ping
+apt-get install -y python3-venv openssl curl ca-certificates iptables openssh-client sshpass socat jq iproute2 iputils-ping kmod
 
 install -d -m 755 /opt/tp27-panel /opt/tp27-panel/static /usr/local/lib/tp27
 install -d -m 700 /etc/tp27 /var/log/tp27/panel-jobs
@@ -120,8 +120,6 @@ done
 curl -fsSL "$RAW/systemd/tp27-panel.service" -o "$PANEL_UNIT"
 curl -fsSL "$RAW/systemd/tp27-ports-reconcile.service" -o /etc/systemd/system/tp27-ports-reconcile.service
 
-# Keep the local Iran data-plane binary in sync with the controller. This is
-# required for the reverse Exit->Iran transport roles.
 curl -fsSL "$RAW/bin/tp27-link-mtls" -o /usr/local/lib/tp27/tp27-link
 curl -fsSL "$RAW/systemd/tp27-link@.service" -o /etc/systemd/system/tp27-link@.service
 chmod 755 /usr/local/lib/tp27/tp27-link
@@ -242,7 +240,8 @@ echo
 echo " Service: $(systemctl is-active tp27-panel.service || true)"
 echo " Port reconcile: $(systemctl is-active tp27-ports-reconcile.service || true)"
 echo " Agent controller: enabled"
-echo " Reverse Fast Pool: Exit -> Iran mode enabled"
+echo " GRE FAST kernel data plane: enabled"
+echo " TLS reverse transport: fallback available"
 if [[ "$SSL_STATE" == "trusted" ]]; then
   echo " Trusted IP certificate and automatic renewal: enabled"
 else
