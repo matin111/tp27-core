@@ -7,29 +7,80 @@ ROLE="$(jq -r '.role' "$CFG")"
 IFACE="$(jq -r '.interface' "$CFG")"
 ADDR="$(jq -r '.tunnel_ip' "$CFG")"
 MTU="$(jq -r '.mtu // 1280' "$CFG")"
+
 ip link del "$IFACE" 2>/dev/null || true
-cleanup(){ local rc=$?; [[ -n "${SOCAT_PID:-}" ]] && kill "$SOCAT_PID" 2>/dev/null || true; ip link del "$IFACE" 2>/dev/null || true; exit "$rc"; }
+cleanup(){
+  local rc=$?
+  [[ -n "${SOCAT_PID:-}" ]] && kill "$SOCAT_PID" 2>/dev/null || true
+  ip link del "$IFACE" 2>/dev/null || true
+  exit "$rc"
+}
 trap cleanup EXIT INT TERM
-if [[ "$ROLE" == "exit" ]]; then
-  PORT="$(jq -r '.listen_port' "$CFG")"
-  CERT="$(jq -r '.cert' "$CFG")"
-  KEY="$(jq -r '.key' "$CFG")"
-  CLIENT_CA="$(jq -r '.client_ca' "$CFG")"
-  socat -d -d "TUN:${ADDR},tun-name=${IFACE},tun-type=tun,iff-no-pi,iff-up" "OPENSSL-LISTEN:${PORT},reuseaddr,cert=${CERT},key=${KEY},cafile=${CLIENT_CA},verify=1" &
-elif [[ "$ROLE" == "iran" ]]; then
-  ENDPOINT="$(jq -r '.endpoint' "$CFG")"
-  PORT="$(jq -r '.listen_port' "$CFG")"
-  CAFILE="$(jq -r '.ca_file' "$CFG")"
-  CERT="$(jq -r '.cert' "$CFG")"
-  KEY="$(jq -r '.key' "$CFG")"
-  socat -d -d "TUN:${ADDR},tun-name=${IFACE},tun-type=tun,iff-no-pi,iff-up" "OPENSSL:${ENDPOINT}:${PORT},cafile=${CAFILE},cert=${CERT},key=${KEY},verify=1" &
-else
-  echo "invalid role=$ROLE" >&2; exit 2
-fi
+
+case "$ROLE" in
+  exit)
+    PORT="$(jq -r '.listen_port' "$CFG")"
+    CERT="$(jq -r '.cert' "$CFG")"
+    KEY="$(jq -r '.key' "$CFG")"
+    CLIENT_CA="$(jq -r '.client_ca' "$CFG")"
+    socat -d -d \
+      "TUN:${ADDR},tun-name=${IFACE},tun-type=tun,iff-no-pi,iff-up" \
+      "OPENSSL-LISTEN:${PORT},reuseaddr,keepalive,nodelay,cert=${CERT},key=${KEY},cafile=${CLIENT_CA},verify=1" &
+    ;;
+
+  iran)
+    ENDPOINT="$(jq -r '.endpoint' "$CFG")"
+    PORT="$(jq -r '.listen_port' "$CFG")"
+    CAFILE="$(jq -r '.ca_file' "$CFG")"
+    CERT="$(jq -r '.cert' "$CFG")"
+    KEY="$(jq -r '.key' "$CFG")"
+    socat -d -d \
+      "TUN:${ADDR},tun-name=${IFACE},tun-type=tun,iff-no-pi,iff-up" \
+      "OPENSSL:${ENDPOINT}:${PORT},keepalive,nodelay,cafile=${CAFILE},cert=${CERT},key=${KEY},verify=1,commonname=${ENDPOINT}" &
+    ;;
+
+  iran-listen)
+    # Preferred Iran-network mode: the Iran node listens and the foreign Exit
+    # establishes the outbound TLS connection. This removes the dependency on
+    # Iran -> foreign TLS handshakes, which can be unreliable on some routes.
+    PORT="$(jq -r '.listen_port' "$CFG")"
+    CERT="$(jq -r '.cert' "$CFG")"
+    KEY="$(jq -r '.key' "$CFG")"
+    CLIENT_CA="$(jq -r '.client_ca' "$CFG")"
+    socat -d -d \
+      "TUN:${ADDR},tun-name=${IFACE},tun-type=tun,iff-no-pi,iff-up" \
+      "OPENSSL-LISTEN:${PORT},reuseaddr,keepalive,nodelay,cert=${CERT},key=${KEY},cafile=${CLIENT_CA},verify=1" &
+    ;;
+
+  exit-connect)
+    # Reverse data plane: Exit dials the Iran listener.
+    ENDPOINT="$(jq -r '.endpoint' "$CFG")"
+    PORT="$(jq -r '.listen_port' "$CFG")"
+    CAFILE="$(jq -r '.ca_file' "$CFG")"
+    CERT="$(jq -r '.cert' "$CFG")"
+    KEY="$(jq -r '.key' "$CFG")"
+    socat -d -d \
+      "TUN:${ADDR},tun-name=${IFACE},tun-type=tun,iff-no-pi,iff-up" \
+      "OPENSSL:${ENDPOINT}:${PORT},keepalive,nodelay,cafile=${CAFILE},cert=${CERT},key=${KEY},verify=1,commonname=${ENDPOINT}" &
+    ;;
+
+  *)
+    echo "invalid role=$ROLE" >&2
+    exit 2
+    ;;
+esac
+
 SOCAT_PID=$!
 for _ in $(seq 1 50); do
-  if ip link show "$IFACE" >/dev/null 2>&1; then ip link set dev "$IFACE" mtu "$MTU" up; break; fi
+  if ip link show "$IFACE" >/dev/null 2>&1; then
+    ip link set dev "$IFACE" mtu "$MTU" up
+    break
+  fi
   sleep 0.1
 done
-ip link show "$IFACE" >/dev/null 2>&1 || { echo "interface $IFACE was not created" >&2; wait "$SOCAT_PID"; }
+
+ip link show "$IFACE" >/dev/null 2>&1 || {
+  echo "interface $IFACE was not created" >&2
+  wait "$SOCAT_PID"
+}
 wait "$SOCAT_PID"
