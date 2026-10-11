@@ -67,7 +67,7 @@ fi
 echo "============================================================"
 echo " TP27 EXIT AGENT READY"
 echo " Controller: $CONTROLLER"
-echo " Agent version: 1.2.0"
+echo " Agent version: 1.2.1"
 echo " Core data-plane: refreshed"
 echo " Service: active"
 echo " Config: /etc/tp27/exit-agent.json"
