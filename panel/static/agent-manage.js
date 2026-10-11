@@ -11,6 +11,17 @@ function formatAgentTime(ts){
   catch(_){return String(ts)}
 }
 
+function agentVersionTuple(v){
+  const n=String(v||'0').match(/\d+/g)||[];
+  return [Number(n[0]||0),Number(n[1]||0),Number(n[2]||0)];
+}
+
+function agentVersionAtLeast(v,a,b,c){
+  const x=agentVersionTuple(v), y=[a,b,c];
+  for(let i=0;i<3;i++){if(x[i]>y[i])return true;if(x[i]<y[i])return false}
+  return true;
+}
+
 async function loadAgents(){
   try{
     const data=await api('/api/agents');
@@ -72,11 +83,12 @@ function renderAgentManage(data){
     </div>`).join(''):'<div class="muted">این سرور Tunnel وابسته ندارد.</div>';
 
   const statusText=a.online?'آنلاین':'آفلاین';
+  const legacy=!agentVersionAtLeast(a.version,1,2,0);
   $('agentManageBody').innerHTML=`
     <div class="manage-summary">
       <div><span class="muted">وضعیت</span><strong class="${a.online?'status-good':'status-bad'}">${statusText}</strong></div>
       <div><span class="muted">IP</span><strong>${esc(a.public_ip||'-')}</strong></div>
-      <div><span class="muted">نسخه Agent</span><strong>v${esc(a.version||'-')}</strong></div>
+      <div><span class="muted">نسخه Agent</span><strong class="${legacy?'status-bad':'status-good'}">v${esc(a.version||'-')}</strong></div>
       <div><span class="muted">Tunnelها</span><strong>${tunnels.length}</strong></div>
     </div>
     <div class="manage-summary agent-extra-summary">
@@ -85,6 +97,7 @@ function renderAgentManage(data){
       <div><span class="muted">آخرین ارتباط</span><strong>${esc(formatAgentTime(a.last_seen))}</strong></div>
       <div><span class="muted">ثبت اولیه</span><strong>${esc(formatAgentTime(a.created_at))}</strong></div>
     </div>
+    ${legacy?'<div class="job">برای REVERSE FAST، Agent باید به v1.2.0 ارتقا پیدا کند.</div>':''}
     <div class="ports-title"><h4>Tunnelهای این سرور</h4></div>
     <div>${tunnelHtml}</div>
     <div id="agentStatusOutput" class="job muted">آماده</div>`;
@@ -149,6 +162,51 @@ async function pollManagedAgentCommand(commandId){
     const result=r.result||{};
     const text=[result.tp27||'',result.addresses||''].filter(Boolean).join('\n\n');
     out.innerHTML='<b>وضعیت دریافت شد</b><pre>'+esc(text||'Agent پاسخ داد')+'</pre>';
+  }catch(e){out.textContent='خطا: '+e.message}
+}
+
+async function copyTextValue(text){
+  try{await navigator.clipboard.writeText(text);return true}
+  catch(_){
+    const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();return true
+  }
+}
+
+async function upgradeManagedAgent(){
+  if(!managedAgentId||!managedAgentData)return;
+  const a=managedAgentData.agent||{};
+  const out=$('agentStatusOutput');
+  if(!out)return;
+  try{
+    if(agentVersionAtLeast(a.version,1,2,0)){
+      out.textContent='در حال ارسال ارتقای خودکار Agent...';
+      const q=await api('/api/agents/'+encodeURIComponent(managedAgentId)+'/commands',{
+        method:'POST',body:JSON.stringify({action:'upgrade_agent',args:{}})
+      });
+      await pollAgentUpgrade(q.command_id);
+      return;
+    }
+
+    // Legacy agents cannot self-upgrade because that capability did not exist.
+    // Generate a one-time signed enrollment installer from inside the panel.
+    const r=await api('/api/agents/enrollment/rotate',{method:'POST',body:'{}'});
+    const cmd=`curl -fsSL https://raw.githubusercontent.com/matin111/tp27-core/main/install-exit-agent.sh | bash -s -- '${location.origin}' '${r.token}'`;
+    await copyTextValue(cmd);
+    out.innerHTML='<b>دستور ارتقای یک‌باره کپی شد</b><pre>'+esc(cmd)+'</pre><div class="muted">این دستور را فقط یک‌بار روی همین سرور خارج اجرا کنید. بعد از v1.2، ارتقاهای بعدی کاملاً از پنل انجام می‌شوند.</div>';
+  }catch(e){out.textContent='خطا: '+e.message}
+}
+
+async function pollAgentUpgrade(commandId){
+  const out=$('agentStatusOutput');
+  try{
+    const r=await api('/api/agents/commands/'+encodeURIComponent(commandId));
+    if(r.state==='queued'||r.state==='delivered'){
+      out.textContent='در حال ارتقای Agent...';
+      setTimeout(()=>pollAgentUpgrade(commandId),1200);return;
+    }
+    if(r.state==='failed'||!r.ok){out.textContent='خطا: '+(r.error||'ارتقای Agent ناموفق بود');return}
+    out.textContent='ارتقا ارسال شد؛ منتظر Restart Agent...';
+    setTimeout(async()=>{await loadAgents();await openAgentManage(managedAgentId)},7000);
   }catch(e){out.textContent='خطا: '+e.message}
 }
 
