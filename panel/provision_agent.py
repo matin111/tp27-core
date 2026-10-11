@@ -21,8 +21,57 @@ from provision import (
 )
 
 
+async def _tcp_probe(host: str, port: int, attempts: int = 6):
+    last_error = ''
+    for _ in range(attempts):
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port), timeout=3
+            )
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+            return True, ''
+        except Exception as exc:
+            last_error = str(exc)
+            await asyncio.sleep(1)
+    return False, last_error
+
+
+def _local_link_log(eid: str):
+    rc, out, err = run([
+        'journalctl', '-u', f'tp27-link@{eid}.service',
+        '-n', '24', '--no-pager', '-o', 'cat'
+    ], check=False)
+    text = (out or err or '').strip()
+    if len(text) > 3000:
+        text = text[-3000:]
+    return text
+
+
+def _cleanup_local_failed_exit(eid: str | None):
+    if not eid:
+        return
+    run(['systemctl', 'disable', '--now', f'tp27-link@{eid}.service'], check=False)
+    try:
+        (EXITS / f'{eid}.json').unlink(missing_ok=True)
+    except Exception:
+        pass
+    try:
+        core = load_json(CORE_CONFIG)
+        core.setdefault('exits', [])
+        core['exits'] = [x for x in core['exits'] if x.get('id') != eid]
+        atomic_json(CORE_CONFIG, core)
+    except Exception:
+        pass
+
+
 async def provision_via_agent(job_id, agent_id, requested_id=None,
                               tunnel_port=None, mtu=1280, mappings=None):
+    eid = None
+    local_started = False
     try:
         agent = get_agent(agent_id)
         if not agent:
@@ -76,6 +125,9 @@ async def provision_via_agent(job_id, agent_id, requested_id=None,
             raise RuntimeError(result_cmd.get('error') or 'Agent provisioning failed')
 
         result = result_cmd.get('result') or {}
+        if not result.get('service_active'):
+            raise RuntimeError('سرویس Link روی سرور خارج فعال نشد')
+
         exit_cert_pem = result.get('exit_cert_pem', '')
         if 'BEGIN CERTIFICATE' not in exit_cert_pem:
             raise RuntimeError('Certificate خروج از Agent دریافت نشد')
@@ -84,6 +136,23 @@ async def provision_via_agent(job_id, agent_id, requested_id=None,
         local_cert.parent.mkdir(parents=True, exist_ok=True)
         local_cert.write_text(exit_cert_pem.strip() + '\n', encoding='utf-8')
         os.chmod(local_cert, 0o644)
+
+        job_set(job_id, message=f'بررسی دسترسی ایران به {endpoint}:{port}')
+        reachable, probe_error = await _tcp_probe(endpoint, port)
+        if not reachable:
+            raise RuntimeError(
+                f'پورت Tunnel {port} روی سرور خارج از سمت ایران قابل دسترس نیست'
+                + (f' ({probe_error})' if probe_error else '')
+            )
+
+        # A plain TCP probe may consume the non-forking socat listener. Restart
+        # the remote link before starting the real mTLS session.
+        job_set(job_id, message='آماده‌سازی مجدد Link سرور خارج')
+        restart = queue_command(agent_id, 'restart_link', {'id': eid})
+        restart_result = await wait_command(restart['id'], timeout=45)
+        if restart_result.get('state') != 'done' or not restart_result.get('ok'):
+            raise RuntimeError(restart_result.get('error') or 'Restart Link سرور خارج ناموفق بود')
+        await asyncio.sleep(1)
 
         remote_addr = str(ipaddress.ip_interface(remote_ip).ip)
         exit_cfg = {
@@ -120,6 +189,7 @@ async def provision_via_agent(job_id, agent_id, requested_id=None,
         rc, out, err = run(['systemctl', 'enable', '--now', f'tp27-link@{eid}.service'], check=False)
         if rc != 0:
             raise RuntimeError(err or out or 'local link failed')
+        local_started = True
 
         job_set(job_id, message='Health Check')
         online = False
@@ -130,6 +200,9 @@ async def provision_via_agent(job_id, agent_id, requested_id=None,
                 online = True
                 break
         if not online:
+            log = _local_link_log(eid)
+            if log:
+                raise RuntimeError('Link ساخته شد اما Health Check پاسخ نداد\n' + log)
             raise RuntimeError('Link ساخته شد اما Health Check پاسخ نداد')
 
         applied = []
@@ -150,5 +223,7 @@ async def provision_via_agent(job_id, agent_id, requested_id=None,
         }
         job_set(job_id, state='done', message=f'{eid} ONLINE شد', result=final)
     except Exception as exc:
+        # Do not leave a dead red tunnel in the panel when provisioning failed.
+        _cleanup_local_failed_exit(eid)
         detail = str(exc).strip() or 'Agent provisioning failed'
         job_set(job_id, state='failed', message=f'خطا: {detail}', error=detail)
