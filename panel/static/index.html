@@ -39,11 +39,8 @@
 
     <section class="card builder">
       <h3>ساخت تونل</h3>
-
       <div class="form-grid tunnel-grid">
-        <label>سرور خارج
-          <select id="agentId"><option value="">انتخاب سرور</option></select>
-        </label>
+        <label>سرور خارج<select id="agentId"><option value="">انتخاب سرور</option></select></label>
         <label>شناسه<input id="exitId" placeholder="exit01"></label>
         <label>پورت Tunnel<input id="tunnelPort" type="number" placeholder="خودکار"></label>
       </div>
@@ -55,10 +52,7 @@
           <button class="btn small primary" type="button" onclick="addPortRow()">+ پورت</button>
         </div>
       </div>
-
-      <div class="port-head">
-        <span>سرویس</span><span>نوع</span><span>پورت ایران</span><span>پورت خارج</span><span></span>
-      </div>
+      <div class="port-head"><span>سرویس</span><span>نوع</span><span>پورت ایران</span><span>پورت خارج</span><span></span></div>
       <div id="portRows"></div>
 
       <div class="row buttons">
@@ -76,40 +70,71 @@
       <h3 id="wizardTitle">افزودن سرور خارج</h3>
       <button class="btn small" type="button" onclick="closeServerWizard()">×</button>
     </div>
-
     <div id="wizardWaiting">
-      <div class="wizard-status">
-        <span id="wizardDot" class="dot bad"></span>
-        <strong id="wizardStatus">در حال آماده‌سازی...</strong>
-      </div>
-
-      <div class="command-box">
-        <code id="installCommand"></code>
-      </div>
-
+      <div class="wizard-status"><span id="wizardDot" class="dot bad"></span><strong id="wizardStatus">در حال آماده‌سازی...</strong></div>
+      <div class="command-box"><code id="installCommand"></code></div>
       <div class="actions wizard-actions">
         <button class="btn primary" type="button" onclick="copyInstallCommand()">کپی دستور نصب</button>
         <button class="btn" type="button" onclick="checkEnrollmentNow()">بررسی اتصال</button>
       </div>
     </div>
-
     <div id="wizardReady" class="hidden">
-      <div class="success-box">
-        <span class="dot good"></span>
-        <strong id="readyAgentName">سرور متصل شد</strong>
-        <div id="readyAgentMeta" class="muted"></div>
-      </div>
+      <div class="success-box"><span class="dot good"></span><strong id="readyAgentName">سرور متصل شد</strong><div id="readyAgentMeta" class="muted"></div></div>
       <button class="btn primary full" type="button" onclick="useReadyAgent()">ساخت تونل برای این سرور</button>
+    </div>
+  </div>
+</div>
+
+<div id="tunnelManage" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="manageTitle">
+  <div class="modal-card manage-card">
+    <div class="section-title modal-head">
+      <h3 id="manageTitle">مدیریت تونل</h3>
+      <button class="btn small" type="button" onclick="closeTunnelManage()">×</button>
+    </div>
+
+    <div class="manage-summary">
+      <div><span class="muted">وضعیت</span><strong id="manageHealth">-</strong></div>
+      <div><span class="muted">سرور خارج</span><strong id="manageEndpoint">-</strong></div>
+      <div><span class="muted">پورت Tunnel</span><strong id="manageTunnelPort">-</strong></div>
+      <div><span class="muted">Interface</span><strong id="manageInterface">-</strong></div>
+    </div>
+
+    <div class="ports-title">
+      <h4>Port Mapping</h4>
+      <div class="actions">
+        <button class="btn small" type="button" onclick="manageStandardPorts()">استاندارد</button>
+        <button class="btn small primary" type="button" onclick="addManagePortRow()">+ پورت</button>
+      </div>
+    </div>
+    <div class="port-head"><span>سرویس</span><span>نوع</span><span>پورت ایران</span><span>پورت خارج</span><span></span></div>
+    <div id="managePortRows"></div>
+    <div id="manageMessage" class="job muted">آماده</div>
+
+    <div class="manage-footer">
+      <div class="actions">
+        <button class="btn primary" type="button" onclick="saveManagedPorts()">ذخیره پورت‌ها</button>
+        <button class="btn" type="button" onclick="diagnoseManagedTunnel()">بررسی</button>
+        <button class="btn" type="button" onclick="repairManagedTunnel()">تعمیر / Restart</button>
+      </div>
+      <button class="btn danger" type="button" onclick="openDeleteTunnel()">حذف تونل</button>
+    </div>
+  </div>
+</div>
+
+<div id="deleteTunnelModal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-card confirm-card">
+    <h3>حذف تونل</h3>
+    <p id="deleteTunnelText" class="muted"></p>
+    <div class="actions confirm-actions">
+      <button id="deleteTunnelBtn" class="btn danger" type="button" onclick="confirmDeleteTunnel()">حذف کامل</button>
+      <button class="btn" type="button" onclick="closeDeleteTunnel()">انصراف</button>
     </div>
   </div>
 </div>
 
 <div id="tunnelDiag" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="diagTitle">
   <div class="modal-card diag-card">
-    <div class="section-title modal-head">
-      <h3 id="diagTitle">بررسی تونل</h3>
-      <button class="btn small" type="button" onclick="closeTunnelDiag()">×</button>
-    </div>
+    <div class="section-title modal-head"><h3 id="diagTitle">بررسی تونل</h3><button class="btn small" type="button" onclick="closeTunnelDiag()">×</button></div>
     <div id="diagBody" class="diag-body"></div>
     <div class="actions wizard-actions">
       <button id="repairBtn" class="btn primary" type="button" onclick="repairActiveTunnel()">تعمیر خودکار</button>
