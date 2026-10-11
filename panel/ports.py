@@ -33,12 +33,13 @@ def atomic_json(path, data):
 
 
 def default_state():
-    return {'version': 1, 'mappings': [], 'active_l2tp_exit': None}
+    return {'version': 1, 'mapping_mode': 'preserve-port', 'mappings': [], 'active_l2tp_exit': None}
 
 
 def state():
     cfg = load_json(PORT_CONFIG, default_state())
     cfg.setdefault('version', 1)
+    cfg.setdefault('mapping_mode', 'preserve-port')
     cfg.setdefault('mappings', [])
     cfg.setdefault('active_l2tp_exit', None)
     return cfg
@@ -55,31 +56,24 @@ def get_exit(exit_id):
     raise ValueError(f'Exit not found: {exit_id}')
 
 
-def exit_number(exit_id):
-    m = re.search(r'(\d+)$', exit_id or '')
-    if m:
-        n = int(m.group(1))
-        if 1 <= n <= 999:
-            return n
-    exits = [x.get('id') for x in core().get('exits', [])]
-    try:
-        return exits.index(exit_id) + 1
-    except ValueError:
-        raise ValueError('Exit not found')
-
-
 def profile(exit_id, cisco_port=8897, openvpn_port=9988, wireguard_port=55821):
     get_exit(exit_id)
-    n = exit_number(exit_id)
+    cisco_port = int(cisco_port)
+    openvpn_port = int(openvpn_port)
+    wireguard_port = int(wireguard_port)
     return [
         {'id': f'{exit_id}-cisco-tcp', 'exit_id': exit_id, 'service': 'cisco',
-         'proto': 'tcp', 'listen_port': 11000 + n, 'target_port': int(cisco_port), 'enabled': True},
+         'proto': 'tcp', 'listen_port': cisco_port, 'target_port': cisco_port,
+         'port_mode': 'preserve', 'enabled': True},
         {'id': f'{exit_id}-cisco-udp', 'exit_id': exit_id, 'service': 'cisco',
-         'proto': 'udp', 'listen_port': 11000 + n, 'target_port': int(cisco_port), 'enabled': True},
+         'proto': 'udp', 'listen_port': cisco_port, 'target_port': cisco_port,
+         'port_mode': 'preserve', 'enabled': True},
         {'id': f'{exit_id}-openvpn-tcp', 'exit_id': exit_id, 'service': 'openvpn',
-         'proto': 'tcp', 'listen_port': 12000 + n, 'target_port': int(openvpn_port), 'enabled': True},
+         'proto': 'tcp', 'listen_port': openvpn_port, 'target_port': openvpn_port,
+         'port_mode': 'preserve', 'enabled': True},
         {'id': f'{exit_id}-wireguard-udp', 'exit_id': exit_id, 'service': 'wireguard',
-         'proto': 'udp', 'listen_port': 13000 + n, 'target_port': int(wireguard_port), 'enabled': True},
+         'proto': 'udp', 'listen_port': wireguard_port, 'target_port': wireguard_port,
+         'port_mode': 'preserve', 'enabled': True},
     ]
 
 
@@ -97,8 +91,16 @@ def validate_mapping(item, existing=None):
             continue
         if old.get('id') == item.get('id'):
             continue
-        if old.get('proto') == item.get('proto') and int(old.get('listen_port', 0)) == int(item['listen_port']):
-            raise ValueError(f"port collision: {item['proto']}/{item['listen_port']}")
+        same_socket = (
+            old.get('proto') == item.get('proto') and
+            int(old.get('listen_port', 0)) == int(item['listen_port'])
+        )
+        if same_socket:
+            raise ValueError(
+                f"پورت {item['proto'].upper()}/{item['listen_port']} روی IP ایران قبلاً برای "
+                f"{old.get('exit_id')} رزرو شده است. برای چند Exit با پورت یکسان باید IP عمومی "
+                "جدا داشته باشید، یا یک Exit فعال برای این سرویس انتخاب کنید، یا پورت دستی دیگری بدهید."
+            )
 
 
 def apply_profile(exit_id, cisco_port=8897, openvpn_port=9988, wireguard_port=55821):
@@ -107,6 +109,7 @@ def apply_profile(exit_id, cisco_port=8897, openvpn_port=9988, wireguard_port=55
     kept = [m for m in cfg['mappings'] if m.get('exit_id') != exit_id or m.get('service') not in {'cisco','openvpn','wireguard'}]
     for item in wanted:
         validate_mapping(item, kept + wanted)
+    cfg['mapping_mode'] = 'preserve-port'
     cfg['mappings'] = kept + wanted
     atomic_json(PORT_CONFIG, cfg)
     reconcile()
@@ -118,7 +121,7 @@ def add_custom(exit_id, service, proto, listen_port, target_port):
     safe = re.sub(r'[^a-z0-9_-]', '-', service.lower())[:24] or 'custom'
     item = {'id': f'{exit_id}-{safe}-{proto}-{listen_port}', 'exit_id': exit_id,
             'service': safe, 'proto': proto, 'listen_port': int(listen_port),
-            'target_port': int(target_port), 'enabled': True}
+            'target_port': int(target_port), 'port_mode': 'custom', 'enabled': True}
     validate_mapping(item, cfg['mappings'])
     cfg['mappings'] = [m for m in cfg['mappings'] if m.get('id') != item['id']] + [item]
     atomic_json(PORT_CONFIG, cfg)
