@@ -23,7 +23,11 @@ PY
 
 [[ -r "$KEY" ]] || { echo "SSH key is not readable: $KEY" >&2; exit 3; }
 install -d -m 700 /etc/tp27
-install -m 600 /dev/null "$KNOWN_HOSTS" 2>/dev/null || true
+if [[ ! -e "$KNOWN_HOSTS" ]]; then
+  install -m 600 /dev/null "$KNOWN_HOSTS"
+else
+  chmod 600 "$KNOWN_HOSTS"
+fi
 
 exec /usr/bin/ssh -NT \
   -i "$KEY" \
