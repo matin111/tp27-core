@@ -13,10 +13,11 @@ from pathlib import Path
 
 import requests
 
-VERSION = '1.0.0'
+VERSION = '1.1.0'
 ROOT = Path('/etc/tp27')
 CONFIG = ROOT / 'exit-agent.json'
 CERTS = ROOT / 'certs'
+EXITS = ROOT / 'exits'
 
 
 def atomic_json(path: Path, data, mode=0o600):
@@ -180,10 +181,40 @@ def action_restart_link(args):
     return {'id': eid, 'active': active}
 
 
+def action_delete_exit(args):
+    eid = safe_id(str(args.get('id', '')))
+    svc = 'tp27-link@' + eid + '.service'
+    run(['systemctl', 'disable', '--now', svc], timeout=30, check=False)
+    run(['systemctl', 'reset-failed', svc], timeout=15, check=False)
+
+    cfg = EXITS / (eid + '.json')
+    try:
+        cfg.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    removed = []
+    for path in (
+        CERTS / (eid + '.crt'),
+        CERTS / (eid + '.key'),
+        CERTS / (eid + '-iran.crt'),
+        CERTS / (eid + '-iran.key'),
+    ):
+        try:
+            if path.exists():
+                path.unlink()
+                removed.append(str(path))
+        except Exception:
+            pass
+
+    return {'id': eid, 'deleted': True, 'removed': removed}
+
+
 ACTIONS = {
     'status': action_status,
     'provision_exit': action_provision_exit,
     'restart_link': action_restart_link,
+    'delete_exit': action_delete_exit,
 }
 
 
