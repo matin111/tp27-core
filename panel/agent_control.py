@@ -19,6 +19,7 @@ ROOT = Path('/etc/tp27')
 AGENTS_FILE = ROOT / 'agents.json'
 COMMANDS_FILE = ROOT / 'agent-commands.json'
 ENROLL_TOKEN_FILE = ROOT / 'agent-enroll.token'
+CORE_CONFIG = ROOT / 'config.json'
 LOCK = threading.RLock()
 
 ALLOWED_ACTIONS = {
@@ -83,6 +84,14 @@ def _commands():
     return data
 
 
+def _linked_tunnels(agent_id: str):
+    core = _load(CORE_CONFIG, {'exits': []})
+    return [
+        e for e in core.get('exits', [])
+        if e.get('agent_id') == agent_id
+    ]
+
+
 def _admin_guard(request: Request):
     if not session_ok(request.cookies.get('tp27_session', '')):
         raise HTTPException(status_code=401, detail='authentication required')
@@ -108,9 +117,12 @@ def list_agents():
         data = _agents()
         out = []
         for aid, rec in data['agents'].items():
+            if rec.get('disabled'):
+                continue
             row = {k: v for k, v in rec.items() if k != 'secret_hash'}
             row['agent_id'] = aid
             row['online'] = now - int(rec.get('last_seen', 0) or 0) <= 45
+            row['tunnel_count'] = len(_linked_tunnels(aid))
             out.append(row)
         return sorted(out, key=lambda x: (not x['online'], x.get('hostname', ''), x['agent_id']))
 
@@ -118,12 +130,39 @@ def list_agents():
 def get_agent(agent_id: str):
     with LOCK:
         rec = _agents()['agents'].get(agent_id)
-        if not rec:
+        if not rec or rec.get('disabled'):
             return None
         row = {k: v for k, v in rec.items() if k != 'secret_hash'}
     row['agent_id'] = agent_id
     row['online'] = int(time.time()) - int(row.get('last_seen', 0) or 0) <= 45
+    row['tunnel_count'] = len(_linked_tunnels(agent_id))
     return row
+
+
+def retire_agent(agent_id: str):
+    _valid_agent_id(agent_id)
+    with LOCK:
+        data = _agents()
+        rec = data['agents'].get(agent_id)
+        if not rec or rec.get('disabled'):
+            raise ValueError('سرور خارج پیدا نشد')
+        rec['disabled'] = True
+        rec['disabled_at'] = int(time.time())
+        _atomic_json(AGENTS_FILE, data)
+
+        commands = _commands()
+        changed = False
+        for item in commands.get('commands', []):
+            if item.get('agent_id') == agent_id and item.get('state') in {'queued', 'delivered'}:
+                item['state'] = 'failed'
+                item['ok'] = False
+                item['error'] = 'Agent از پنل حذف شد'
+                item['finished_at'] = int(time.time())
+                changed = True
+        if changed:
+            _atomic_json(COMMANDS_FILE, commands)
+
+    return True
 
 
 def queue_command(agent_id: str, action: str, args=None):
@@ -247,12 +286,14 @@ async def agent_heartbeat(request: Request, body: HeartbeatBody):
             'status': body.status,
         })
         _atomic_json(AGENTS_FILE, data)
-    return {'ok': True, 'server_time': int(time.time())}
+    return {'ok': True, 'server_time': int(time.time()), 'disabled': bool(rec.get('disabled'))}
 
 
 @router.post('/api/agent/poll')
 async def agent_poll(request: Request):
-    aid, _ = _agent_auth(request)
+    aid, rec = _agent_auth(request)
+    if rec.get('disabled'):
+        return {'command': None, 'disabled': True}
     with LOCK:
         data = _commands()
         selected = None
@@ -293,6 +334,64 @@ async def agent_result(request: Request, body: AgentResultBody):
 async def admin_agents(request: Request):
     _admin_guard(request)
     return {'agents': list_agents()}
+
+
+@router.get('/api/agents/{agent_id}/manage')
+async def admin_agent_manage(request: Request, agent_id: str):
+    _admin_guard(request)
+    try:
+        _valid_agent_id(agent_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    agent = get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail='سرور خارج پیدا نشد')
+    tunnels = _linked_tunnels(agent_id)
+    return {
+        'agent': agent,
+        'tunnels': [
+            {
+                'id': x.get('id'),
+                'endpoint': x.get('endpoint'),
+                'port': x.get('port'),
+                'interface': x.get('interface'),
+                'remote_ip': x.get('remote_ip'),
+            }
+            for x in tunnels
+        ],
+    }
+
+
+@router.delete('/api/agents/{agent_id}')
+async def admin_delete_agent(request: Request, agent_id: str):
+    _admin_guard(request)
+    try:
+        _valid_agent_id(agent_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    agent = get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail='سرور خارج پیدا نشد')
+
+    tunnels = _linked_tunnels(agent_id)
+    if tunnels:
+        names = ', '.join(str(x.get('id')) for x in tunnels)
+        raise HTTPException(
+            status_code=409,
+            detail=f'این سرور هنوز Tunnel وابسته دارد: {names}. ابتدا Tunnelها را حذف کنید.'
+        )
+
+    try:
+        retire_agent(agent_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return {
+        'ok': True,
+        'agent_id': agent_id,
+        'message': 'سرور از پنل حذف شد. سرویس‌های VPN روی سرور خارج دست‌نخورده‌اند.',
+    }
 
 
 @router.get('/api/agents/enrollment')
