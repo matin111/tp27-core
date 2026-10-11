@@ -6,22 +6,22 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from agent_control import get_agent, router as agent_router
 from auth import make_session, session_ok, verify_password
 from provision import CORE_CONFIG, JOBS, load_json, preflight, provision, run, validate_id
+from provision_agent import provision_via_agent
 from provision_password import preflight_password, provision_password
 from ports import add_custom, apply_profile, set_l2tp, state as port_state
 from portplan import validate_plan
 
 BASE = Path(__file__).resolve().parent
-CONTROL_KEY = Path('/etc/tp27/control_ed25519')
-CONTROL_PUB = Path('/etc/tp27/control_ed25519.pub')
-
 app = FastAPI(title='TP27 Control Panel', docs_url=None, redoc_url=None)
 app.mount('/static', StaticFiles(directory=BASE / 'static'), name='static')
+app.include_router(agent_router)
 
 
 def authed(request: Request):
@@ -37,18 +37,13 @@ def html(name):
     return (BASE / 'static' / name).read_text(encoding='utf-8')
 
 
-def control_key_text():
-    if not CONTROL_KEY.is_file():
-        return None
-    return CONTROL_KEY.read_text(encoding='utf-8')
-
-
 class SSHProbe(BaseModel):
-    host: str
+    host: str = ''
     port: int = Field(default=22, ge=1, le=65535)
     username: str = 'root'
     password: Optional[str] = None
     private_key: Optional[str] = None
+    agent_id: Optional[str] = None
 
 
 class PortMappingInput(BaseModel):
@@ -112,17 +107,6 @@ async def home(request: Request):
     return HTMLResponse(html('index.html')) if authed(request) else RedirectResponse('/login')
 
 
-# Public key is intentionally public. The private control key never leaves Iran.
-@app.get('/api/control-key', response_class=PlainTextResponse)
-async def public_control_key():
-    if not CONTROL_PUB.is_file():
-        raise HTTPException(status_code=404, detail='control key not initialized')
-    return PlainTextResponse(
-        CONTROL_PUB.read_text(encoding='utf-8').strip() + '\n',
-        headers={'Cache-Control': 'no-store'},
-    )
-
-
 @app.get('/api/status')
 async def status(request: Request):
     guard(request)
@@ -146,22 +130,29 @@ async def status(request: Request):
 
 
 async def do_preflight(body: SSHProbe):
+    if body.agent_id:
+        agent = get_agent(body.agent_id)
+        if not agent:
+            return {'ok': False, 'error': 'Agent پیدا نشد', 'error_type': 'AgentNotFound'}
+        if not agent.get('online'):
+            return {'ok': False, 'error': 'Agent آفلاین است', 'error_type': 'AgentOffline'}
+        return {'ok': True, 'mode': 'agent', 'agent_id': body.agent_id,
+                'host': agent.get('public_ip'), 'hostname': agent.get('hostname')}
+
+    if not body.host:
+        return {'ok': False, 'error': 'IP سرور خارج لازم است', 'error_type': 'MissingHost'}
     if body.password and not body.private_key:
         return await preflight_password(body.host, body.port, body.username, body.password)
-
-    effective_key = body.private_key or control_key_text()
-    if not effective_key:
-        return {'ok': False, 'error': 'سرور خارج هنوز Enrollment نشده است.', 'error_type': 'NotEnrolled'}
-
     return await preflight(body.host, body.port, body.username,
-                           body.password, effective_key)
+                           body.password, body.private_key)
 
 
 @app.post('/api/preflight')
-async def ssh_preflight(request: Request, body: SSHProbe):
+async def connection_preflight(request: Request, body: SSHProbe):
     guard(request)
     try:
-        ipaddress.ip_address(body.host)
+        if not body.agent_id:
+            ipaddress.ip_address(body.host)
         result = await do_preflight(body)
         if result.get('ok'):
             return result
@@ -174,34 +165,38 @@ async def ssh_preflight(request: Request, body: SSHProbe):
 async def add_exit(request: Request, body: ExitCreate):
     guard(request)
     try:
-        ipaddress.ip_address(body.host)
+        if not body.agent_id:
+            ipaddress.ip_address(body.host)
         if body.id:
             validate_id(body.id)
         mapping_plan = validate_plan([m.model_dump() for m in body.mappings])
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    effective_key = body.private_key or (None if body.password else control_key_text())
-    if not body.password and not effective_key:
-        raise HTTPException(status_code=400, detail='سرور خارج هنوز Enrollment نشده است')
-
     probe = await do_preflight(body)
     if not probe.get('ok'):
-        raise HTTPException(status_code=400, detail=probe.get('error') or 'اتصال SSH ناموفق است')
+        raise HTTPException(status_code=400, detail=probe.get('error') or 'اتصال ناموفق است')
 
     job_id = secrets.token_hex(8)
     JOBS[job_id] = {'id': job_id, 'state': 'queued', 'messages': []}
 
-    if body.password and not body.private_key:
+    if body.agent_id:
+        asyncio.create_task(provision_via_agent(
+            job_id, body.agent_id, body.id,
+            body.tunnel_port, body.mtu, mapping_plan,
+        ))
+    elif body.password and not body.private_key:
         asyncio.create_task(provision_password(
             job_id, body.host, body.port, body.username,
             body.password, body.id, body.tunnel_port,
             body.mtu, mapping_plan,
         ))
     else:
+        if not body.private_key:
+            raise HTTPException(status_code=400, detail='Private Key لازم است')
         asyncio.create_task(provision(
             job_id, body.host, body.port, body.username,
-            body.password, effective_key, body.id,
+            body.password, body.private_key, body.id,
             body.tunnel_port, body.mtu, mapping_plan,
         ))
     return {'job_id': job_id}
