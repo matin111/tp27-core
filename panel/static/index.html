@@ -85,6 +85,35 @@
   </div>
 </div>
 
+<div id="agentManage" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="agentManageTitle">
+  <div class="modal-card manage-card">
+    <div class="section-title modal-head">
+      <h3 id="agentManageTitle">مدیریت سرور خارج</h3>
+      <button class="btn small" type="button" onclick="closeAgentManage()">×</button>
+    </div>
+    <div id="agentManageBody" class="diag-body"></div>
+    <div id="agentManageMessage" class="muted"></div>
+    <div class="manage-footer">
+      <div class="actions">
+        <button class="btn primary" type="button" onclick="checkManagedAgent()">بررسی وضعیت</button>
+        <button class="btn" type="button" onclick="useManagedAgentForTunnel()">ساخت تونل</button>
+      </div>
+      <button id="agentDeleteBtn" class="btn danger" type="button" onclick="openDeleteAgent()">حذف سرور</button>
+    </div>
+  </div>
+</div>
+
+<div id="deleteAgentModal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-card confirm-card">
+    <h3>حذف سرور خارج</h3>
+    <p id="deleteAgentText" class="muted"></p>
+    <div class="actions confirm-actions">
+      <button id="deleteAgentConfirmBtn" class="btn danger" type="button" onclick="confirmDeleteAgent()">حذف سرور</button>
+      <button class="btn" type="button" onclick="closeDeleteAgent()">انصراف</button>
+    </div>
+  </div>
+</div>
+
 <div id="tunnelManage" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="manageTitle">
   <div class="modal-card manage-card">
     <div class="section-title modal-head">
@@ -144,5 +173,6 @@
 </div>
 
 <script src="/static/app.js"></script>
+<script src="/static/agent-manage.js"></script>
 </body>
 </html>
