@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+
 ID="${1:?instance id required}"
 CFG="/etc/tp27/exits/${ID}.json"
 [[ -f "$CFG" ]] || { echo "missing $CFG" >&2; exit 1; }
+
 ROLE="$(jq -r '.role' "$CFG")"
 IFACE="$(jq -r '.interface' "$CFG")"
 ADDR="$(jq -r '.tunnel_ip' "$CFG")"
 MTU="$(jq -r '.mtu // 1280' "$CFG")"
 
+[[ -n "$IFACE" && "$IFACE" != "null" ]] || { echo "invalid interface" >&2; exit 2; }
+[[ -n "$ADDR" && "$ADDR" != "null" ]] || { echo "invalid tunnel_ip" >&2; exit 2; }
+
 ip link del "$IFACE" 2>/dev/null || true
+
 cleanup(){
   local rc=$?
   [[ -n "${SOCAT_PID:-}" ]] && kill "$SOCAT_PID" 2>/dev/null || true
@@ -17,6 +23,11 @@ cleanup(){
 }
 trap cleanup EXIT INT TERM
 
+# Do not rely on socat to configure the L3 address/netmask.  Different socat
+# builds handle TUN:<address/prefix> inconsistently.  TP27 creates a bare TUN
+# device and configures its IPv4 address explicitly after the fd exists.
+TUN_SPEC="TUN,tun-name=${IFACE},tun-type=tun,iff-no-pi"
+
 case "$ROLE" in
   exit)
     PORT="$(jq -r '.listen_port' "$CFG")"
@@ -24,7 +35,7 @@ case "$ROLE" in
     KEY="$(jq -r '.key' "$CFG")"
     CLIENT_CA="$(jq -r '.client_ca' "$CFG")"
     socat -d -d \
-      "TUN:${ADDR},tun-name=${IFACE},tun-type=tun,iff-no-pi,iff-up" \
+      "$TUN_SPEC" \
       "OPENSSL-LISTEN:${PORT},reuseaddr,keepalive,nodelay,cert=${CERT},key=${KEY},cafile=${CLIENT_CA},verify=1" &
     ;;
 
@@ -35,32 +46,28 @@ case "$ROLE" in
     CERT="$(jq -r '.cert' "$CFG")"
     KEY="$(jq -r '.key' "$CFG")"
     socat -d -d \
-      "TUN:${ADDR},tun-name=${IFACE},tun-type=tun,iff-no-pi,iff-up" \
+      "$TUN_SPEC" \
       "OPENSSL:${ENDPOINT}:${PORT},keepalive,nodelay,cafile=${CAFILE},cert=${CERT},key=${KEY},verify=1,commonname=${ENDPOINT}" &
     ;;
 
   iran-listen)
-    # Preferred Iran-network mode: the Iran node listens and the foreign Exit
-    # establishes the outbound TLS connection. This removes the dependency on
-    # Iran -> foreign TLS handshakes, which can be unreliable on some routes.
     PORT="$(jq -r '.listen_port' "$CFG")"
     CERT="$(jq -r '.cert' "$CFG")"
     KEY="$(jq -r '.key' "$CFG")"
     CLIENT_CA="$(jq -r '.client_ca' "$CFG")"
     socat -d -d \
-      "TUN:${ADDR},tun-name=${IFACE},tun-type=tun,iff-no-pi,iff-up" \
+      "$TUN_SPEC" \
       "OPENSSL-LISTEN:${PORT},reuseaddr,keepalive,nodelay,cert=${CERT},key=${KEY},cafile=${CLIENT_CA},verify=1" &
     ;;
 
   exit-connect)
-    # Reverse data plane: Exit dials the Iran listener.
     ENDPOINT="$(jq -r '.endpoint' "$CFG")"
     PORT="$(jq -r '.listen_port' "$CFG")"
     CAFILE="$(jq -r '.ca_file' "$CFG")"
     CERT="$(jq -r '.cert' "$CFG")"
     KEY="$(jq -r '.key' "$CFG")"
     socat -d -d \
-      "TUN:${ADDR},tun-name=${IFACE},tun-type=tun,iff-no-pi,iff-up" \
+      "$TUN_SPEC" \
       "OPENSSL:${ENDPOINT}:${PORT},keepalive,nodelay,cafile=${CAFILE},cert=${CERT},key=${KEY},verify=1,commonname=${ENDPOINT}" &
     ;;
 
@@ -71,16 +78,34 @@ case "$ROLE" in
 esac
 
 SOCAT_PID=$!
-for _ in $(seq 1 50); do
+READY=0
+for _ in $(seq 1 80); do
   if ip link show "$IFACE" >/dev/null 2>&1; then
-    ip link set dev "$IFACE" mtu "$MTU" up
+    ip link set dev "$IFACE" mtu "$MTU"
+    ip addr replace "$ADDR" dev "$IFACE"
+    ip link set dev "$IFACE" up
+    READY=1
+    break
+  fi
+  if ! kill -0 "$SOCAT_PID" 2>/dev/null; then
     break
   fi
   sleep 0.1
 done
 
-ip link show "$IFACE" >/dev/null 2>&1 || {
+if [[ "$READY" -ne 1 ]]; then
   echo "interface $IFACE was not created" >&2
   wait "$SOCAT_PID"
-}
+fi
+
+# Verify the exact L3 address is present before accepting the service as ready.
+if ! ip -4 addr show dev "$IFACE" | grep -Fq "inet ${ADDR} "; then
+  echo "failed to configure ${ADDR} on ${IFACE}" >&2
+  exit 3
+fi
+
+# The connected route for the /30 is installed automatically by `ip addr`.
+# Keep per-link rp_filter disabled so asymmetric service flows are not dropped.
+sysctl -q -w "net.ipv4.conf.${IFACE}.rp_filter=0" 2>/dev/null || true
+
 wait "$SOCAT_PID"
