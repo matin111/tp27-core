@@ -185,3 +185,5 @@ async function confirmDeleteAgent(){
     $('deleteAgentText').textContent='خطا: '+e.message;
   }
 }
+
+loadAgents();
