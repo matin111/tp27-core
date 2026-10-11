@@ -25,8 +25,10 @@ LOCK = threading.RLock()
 ALLOWED_ACTIONS = {
     'status',
     'provision_exit',
+    'provision_reverse_exit',
     'restart_link',
     'delete_exit',
+    'upgrade_agent',
 }
 
 router = APIRouter()
@@ -86,10 +88,7 @@ def _commands():
 
 def _linked_tunnels(agent_id: str):
     core = _load(CORE_CONFIG, {'exits': []})
-    return [
-        e for e in core.get('exits', [])
-        if e.get('agent_id') == agent_id
-    ]
+    return [e for e in core.get('exits', []) if e.get('agent_id') == agent_id]
 
 
 def _admin_guard(request: Request):
@@ -161,7 +160,6 @@ def retire_agent(agent_id: str):
                 changed = True
         if changed:
             _atomic_json(COMMANDS_FILE, commands)
-
     return True
 
 
@@ -242,7 +240,7 @@ class CommandBody(BaseModel):
 
 @router.get('/api/control-key')
 async def control_key():
-    return {'service': 'TP27 Controller', 'agent_api': 1, 'transport': 'outbound-https'}
+    return {'service': 'TP27 Controller', 'agent_api': 2, 'transport': 'outbound-https'}
 
 
 @router.post('/api/agent/enroll')
@@ -350,13 +348,8 @@ async def admin_agent_manage(request: Request, agent_id: str):
     return {
         'agent': agent,
         'tunnels': [
-            {
-                'id': x.get('id'),
-                'endpoint': x.get('endpoint'),
-                'port': x.get('port'),
-                'interface': x.get('interface'),
-                'remote_ip': x.get('remote_ip'),
-            }
+            {'id': x.get('id'), 'endpoint': x.get('endpoint'), 'port': x.get('port'),
+             'interface': x.get('interface'), 'remote_ip': x.get('remote_ip')}
             for x in tunnels
         ],
     }
@@ -369,29 +362,19 @@ async def admin_delete_agent(request: Request, agent_id: str):
         _valid_agent_id(agent_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-
     agent = get_agent(agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail='سرور خارج پیدا نشد')
-
     tunnels = _linked_tunnels(agent_id)
     if tunnels:
         names = ', '.join(str(x.get('id')) for x in tunnels)
-        raise HTTPException(
-            status_code=409,
-            detail=f'این سرور هنوز Tunnel وابسته دارد: {names}. ابتدا Tunnelها را حذف کنید.'
-        )
-
+        raise HTTPException(status_code=409, detail=f'این سرور هنوز Tunnel وابسته دارد: {names}. ابتدا Tunnelها را حذف کنید.')
     try:
         retire_agent(agent_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-
-    return {
-        'ok': True,
-        'agent_id': agent_id,
-        'message': 'سرور از پنل حذف شد. سرویس‌های VPN روی سرور خارج دست‌نخورده‌اند.',
-    }
+    return {'ok': True, 'agent_id': agent_id,
+            'message': 'سرور از پنل حذف شد. سرویس‌های VPN روی سرور خارج دست‌نخورده‌اند.'}
 
 
 @router.get('/api/agents/enrollment')
