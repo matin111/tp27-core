@@ -22,9 +22,23 @@ install -d -m 755 /var/lib/tp27 /var/log/tp27 /usr/local/lib/tp27 /usr/local/bin
 
 if [[ -f /etc/tp27/config.json ]]; then
   cp -a /etc/tp27/config.json "/etc/tp27/backups/config.$(date +%Y%m%d-%H%M%S).json"
+
+  if jq -e '.version == 1' /etc/tp27/config.json >/dev/null 2>&1; then
+    echo "Migrating old TP27 prototype..."
+    systemctl disable --now tp27-agent.service 2>/dev/null || true
+
+    while read -r IFACE; do
+      [[ "$IFACE" == tp27* ]] || continue
+      systemctl disable --now "wg-quick@${IFACE}.service" 2>/dev/null || true
+      ip link del "$IFACE" 2>/dev/null || true
+      rm -f "/etc/wireguard/${IFACE}.conf"
+    done < <(jq -r '(.exits[]?.interface // empty), (.exit.interface // empty)' /etc/tp27/config.json | sort -u)
+
+    rm -rf /etc/tp27/keys/exits
+    rm -f /etc/tp27/exits/*.json 2>/dev/null || true
+  fi
 fi
 
-# Stop only the obsolete TP27 v0.1 monitor; unrelated VPN services are untouched.
 systemctl disable --now tp27-agent.service 2>/dev/null || true
 
 curl -fsSL "$RAW/bin/tp27-v2.py" -o /usr/local/lib/tp27/tp27.py
