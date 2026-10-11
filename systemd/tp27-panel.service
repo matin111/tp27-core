@@ -1,0 +1,17 @@
+[Unit]
+Description=TP27 Control Panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/tp27-panel
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/tp27-panel/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8787 --ssl-keyfile /etc/tp27/panel.key --ssl-certfile /etc/tp27/panel.crt
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
