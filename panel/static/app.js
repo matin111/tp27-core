@@ -172,7 +172,6 @@ function setWizardState(text,state='wait'){
 
 async function openServerWizard(){
   wizardReadyAgent=null;
-  wizardBaseline=new Set(agents.map(x=>x.agent_id));
   $('serverWizard').classList.remove('hidden');
   $('wizardWaiting').classList.remove('hidden');
   $('wizardReady').classList.add('hidden');
@@ -180,6 +179,8 @@ async function openServerWizard(){
   setWizardState('در حال آماده‌سازی...');
 
   try{
+    const before=await loadAgents();
+    wizardBaseline=new Set(before.map(x=>x.agent_id));
     const r=await api('/api/agents/enrollment/rotate',{method:'POST',body:'{}'});
     const cmd=`curl -fsSL https://raw.githubusercontent.com/matin111/tp27-core/main/install-exit-agent.sh | bash -s -- '${location.origin}' '${r.token}'`;
     $('installCommand').textContent=cmd;
