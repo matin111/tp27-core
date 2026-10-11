@@ -1,9 +1,10 @@
 const $=id=>document.getElementById(id);
-const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;'}[c]));
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let agents=[];
 let wizardBaseline=new Set();
 let wizardTimer=null;
 let wizardReadyAgent=null;
+let activeTunnelId=null;
 
 async function api(url,opt={}){
   const r=await fetch(url,{credentials:'same-origin',headers:{'Content-Type':'application/json',...(opt.headers||{})},...opt});
@@ -25,11 +26,15 @@ async function loadStatus(){
     $('exitCount').textContent=s.exits.length;
     $('onlineCount').textContent=s.exits.filter(x=>x.healthy).length;
     $('exitList').innerHTML=s.exits.length?s.exits.map(x=>`
-      <div class="exit">
+      <div class="exit tunnel-card">
         <div class="exit-main">
           <div><span class="dot ${x.healthy?'good':'bad'}"></span><b>${esc(x.id)}</b></div>
           <div class="muted">${esc(x.endpoint)}:${esc(x.port)} · ${esc(x.interface)} · ${esc(x.remote_ip)}</div>
           ${mappingBadges(x.mappings)}
+        </div>
+        <div class="actions tunnel-actions">
+          <button class="btn small" type="button" onclick="diagnoseTunnel('${esc(x.id)}')">بررسی</button>
+          <button class="btn small ${x.healthy?'':'primary'}" type="button" onclick="repairTunnel('${esc(x.id)}')">تعمیر</button>
         </div>
       </div>`).join(''):'<div class="muted">بدون تونل</div>';
   }catch(e){$('exitList').innerHTML='<div class="muted">'+esc(e.message)+'</div>'}
@@ -160,9 +165,69 @@ async function pollJob(id){
     if(r.state==='done'){
       refreshAll();return;
     }
-    if(r.state==='failed')return;
+    if(r.state==='failed'){
+      refreshAll();return;
+    }
     setTimeout(()=>pollJob(id),1500);
   }catch(e){$('job').textContent=e.message}
+}
+
+function diagFlag(label,ok){
+  return `<div class="diag-row"><span class="dot ${ok?'good':'bad'}"></span><span>${esc(label)}</span><b>${ok?'سالم':'خطا'}</b></div>`;
+}
+
+function renderDiagnosis(d){
+  $('diagTitle').textContent='بررسی تونل '+(d.id||'');
+  let html='';
+  html+=diagFlag('Agent سرور خارج',!!d.agent_online);
+  html+=diagFlag('سرویس Link ایران',!!d.local_service);
+  html+=diagFlag('Interface ایران',!!d.interface_up);
+  html+=diagFlag('Ping تونل',!!d.peer_ping);
+  html+=`<div class="diag-meta">${esc(d.endpoint||'-')}:${esc(d.port||'-')} · ${esc(d.interface||'-')} · ${esc(d.remote_ip||'-')}</div>`;
+  if(d.local_log)html+=`<h4>لاگ ایران</h4><pre>${esc(d.local_log)}</pre>`;
+  if(d.remote_status)html+=`<h4>وضعیت سرور خارج</h4><pre>${esc(d.remote_status)}</pre>`;
+  $('diagBody').innerHTML=html;
+  $('repairBtn').textContent=d.healthy?'Restart Link':'تعمیر خودکار';
+  $('repairBtn').disabled=false;
+}
+
+async function diagnoseTunnel(id){
+  activeTunnelId=id;
+  $('tunnelDiag').classList.remove('hidden');
+  $('diagTitle').textContent='در حال بررسی...';
+  $('diagBody').innerHTML='<div class="muted">در حال دریافت وضعیت ایران و سرور خارج...</div>';
+  $('repairBtn').disabled=true;
+  try{
+    const d=await api('/api/exits/'+encodeURIComponent(id)+'/diagnose');
+    renderDiagnosis(d);
+  }catch(e){
+    $('diagBody').innerHTML='<div class="err">'+esc(e.message)+'</div>';
+  }
+}
+
+async function repairTunnel(id){
+  activeTunnelId=id;
+  $('tunnelDiag').classList.remove('hidden');
+  $('diagTitle').textContent='تعمیر تونل '+id;
+  $('diagBody').innerHTML='<div class="muted">در حال Restart هماهنگ Link خارج و ایران...</div>';
+  $('repairBtn').disabled=true;
+  try{
+    const d=await api('/api/exits/'+encodeURIComponent(id)+'/repair',{method:'POST',body:'{}'});
+    renderDiagnosis(d);
+    await loadStatus();
+  }catch(e){
+    $('diagBody').innerHTML='<div class="err">'+esc(e.message)+'</div>';
+    $('repairBtn').disabled=false;
+  }
+}
+
+function repairActiveTunnel(){
+  if(activeTunnelId)repairTunnel(activeTunnelId);
+}
+
+function closeTunnelDiag(){
+  $('tunnelDiag').classList.add('hidden');
+  activeTunnelId=null;
 }
 
 function setWizardState(text,state='wait'){
