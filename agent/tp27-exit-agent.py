@@ -8,13 +8,12 @@ import re
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
 import requests
 
-VERSION = '1.2.1'
+VERSION = '1.3.0'
 RAW = os.environ.get('TP27_REPO_RAW', 'https://raw.githubusercontent.com/matin111/tp27-core/main')
 ROOT = Path('/etc/tp27')
 CONFIG = ROOT / 'exit-agent.json'
@@ -66,8 +65,6 @@ def _download(url, path, mode):
 
 
 def refresh_data_plane():
-    # Fixed, allowlisted source only. This keeps the Exit link implementation
-    # synchronized with the Controller before every reverse provisioning.
     _download(RAW + '/bin/tp27-link-mtls', LINK_BIN, 0o755)
     _download(RAW + '/systemd/tp27-link@.service', LINK_UNIT, 0o644)
     run(['systemctl', 'daemon-reload'], timeout=20)
@@ -160,6 +157,13 @@ def _pem(value, label, max_len=40000):
     return value.strip() + '\n'
 
 
+def _ipv4(value, name):
+    addr = ipaddress.ip_address(str(value or '').strip())
+    if addr.version != 4:
+        raise ValueError(f'{name} must be IPv4')
+    return str(addr)
+
+
 def action_status(_args):
     rc, out, err = run(['tp27', 'status'], timeout=20, check=False)
     _, addr, _ = run(['ip', '-br', 'addr'], timeout=10, check=False)
@@ -220,7 +224,6 @@ def action_provision_reverse_exit(args):
     if not 1000 <= mtu <= 1500:
         raise ValueError('invalid mtu')
 
-    # Always sync the current data-plane implementation before provisioning.
     refresh_data_plane()
 
     ca_pem = _pem(args.get('ca_pem'), 'CERTIFICATE')
@@ -250,7 +253,8 @@ def action_provision_reverse_exit(args):
         'key': str(key_path),
     }
     atomic_json(EXITS / (eid + '.json'), cfg)
-    rc, out, err = run(['systemctl', 'enable', '--now', 'tp27-link@' + eid + '.service'], timeout=30, check=False)
+    run(['systemctl', 'enable', 'tp27-link@' + eid + '.service'], timeout=20, check=False)
+    rc, out, err = run(['systemctl', 'restart', 'tp27-link@' + eid + '.service'], timeout=30, check=False)
     if rc != 0:
         raise RuntimeError(err or out or 'reverse exit link start failed')
     time.sleep(1)
@@ -266,6 +270,71 @@ def action_provision_reverse_exit(args):
         'service_active': active,
         'interface_state': addr_out,
         'route_state': route_out,
+        'agent_version': VERSION,
+    }
+
+
+def action_provision_gre_exit(args):
+    eid = safe_id(str(args.get('id', '')))
+    iran_public = _ipv4(args.get('iran_public'), 'iran_public')
+    exit_public = _ipv4(args.get('exit_public') or public_ip(), 'exit_public')
+    tunnel_ip = str(args.get('tunnel_ip', '')).strip()
+    peer_ip = _ipv4(args.get('peer_ip'), 'peer_ip')
+    iface_addr = ipaddress.ip_interface(tunnel_ip)
+    if iface_addr.version != 4:
+        raise ValueError('tunnel_ip must be IPv4')
+    mtu = int(args.get('mtu', 1400))
+    if not 1000 <= mtu <= 1476:
+        raise ValueError('GRE mtu must be between 1000 and 1476')
+    gre_key = int(args.get('gre_key', 0))
+    if not 1 <= gre_key <= 4294967295:
+        raise ValueError('invalid GRE key')
+
+    refresh_data_plane()
+    EXITS.mkdir(parents=True, exist_ok=True)
+    iface = ('t27' + re.sub(r'[^a-z0-9]', '', eid.lower()))[:15]
+    cfg = {
+        'role': 'gre-exit',
+        'id': eid,
+        'interface': iface,
+        'tunnel_ip': tunnel_ip,
+        'peer_ip': peer_ip,
+        'local_public': exit_public,
+        'remote_public': iran_public,
+        'gre_key': gre_key,
+        'mtu': mtu,
+        'txqueuelen': int(args.get('txqueuelen', 1000)),
+        'transport': 'gre',
+    }
+    atomic_json(EXITS / (eid + '.json'), cfg)
+
+    run(['systemctl', 'enable', 'tp27-link@' + eid + '.service'], timeout=20, check=False)
+    rc, out, err = run(['systemctl', 'restart', 'tp27-link@' + eid + '.service'], timeout=30, check=False)
+    if rc != 0:
+        raise RuntimeError(err or out or 'GRE exit link start failed')
+    time.sleep(2)
+
+    active = subprocess.run(['systemctl', 'is-active', '--quiet', 'tp27-link@' + eid + '.service']).returncode == 0
+    ping_rc, ping_out, ping_err = run(
+        ['ping', '-I', iface, '-c', '2', '-W', '2', peer_ip], timeout=8, check=False
+    )
+    _, addr_out, _ = run(['ip', '-br', '-4', 'addr', 'show', 'dev', iface], timeout=10, check=False)
+    _, route_out, _ = run(['ip', '-4', 'route', 'show', 'dev', iface], timeout=10, check=False)
+    _, link_out, _ = run(['ip', '-s', 'link', 'show', 'dev', iface], timeout=10, check=False)
+
+    return {
+        'id': eid,
+        'mode': 'gre-native',
+        'service_active': active,
+        'health_ping': ping_rc == 0,
+        'ping_output': ping_out or ping_err,
+        'interface': iface,
+        'interface_state': addr_out,
+        'route_state': route_out,
+        'link_state': link_out,
+        'tunnel_ip': tunnel_ip,
+        'peer_ip': peer_ip,
+        'gre_key': gre_key,
         'agent_version': VERSION,
     }
 
@@ -325,6 +394,7 @@ ACTIONS = {
     'status': action_status,
     'provision_exit': action_provision_exit,
     'provision_reverse_exit': action_provision_reverse_exit,
+    'provision_gre_exit': action_provision_gre_exit,
     'restart_link': action_restart_link,
     'delete_exit': action_delete_exit,
     'upgrade_agent': action_upgrade_agent,
