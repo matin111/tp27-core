@@ -10,6 +10,8 @@ from pathlib import Path
 
 import asyncssh
 
+from portplan import apply_plan, validate_plan
+
 ROOT = Path('/etc/tp27')
 CORE_CONFIG = ROOT / 'config.json'
 EXITS = ROOT / 'exits'
@@ -117,7 +119,7 @@ async def preflight(host, port, username, password=None, private_key=None):
 
 
 async def provision(job_id, host, ssh_port, username, password, private_key,
-                    requested_id=None, tunnel_port=None, mtu=1280):
+                    requested_id=None, tunnel_port=None, mtu=1280, mappings=None):
     conn = None
     try:
         job_set(job_id, state='running', message=f'اتصال SSH به {host}:{ssh_port}')
@@ -127,12 +129,6 @@ async def provision(job_id, host, ssh_port, username, password, private_key,
         probe = await conn.run('id -u && hostname', check=False)
         if probe.exit_status != 0 or probe.stdout.splitlines()[0].strip() != '0':
             raise RuntimeError('Provisioning نیاز به دسترسی root دارد')
-
-        job_set(job_id, message='نصب/به‌روزرسانی TP27 روی سرور خارج')
-        cmd = f'curl -fsSL {shlex.quote(RAW + "/install.sh")} | bash -s -- exit'
-        r = await conn.run(cmd, check=False, timeout=180)
-        if r.exit_status != 0:
-            raise RuntimeError((r.stderr or r.stdout or 'remote install failed').strip())
 
         core = load_json(CORE_CONFIG)
         eid, local_ip, remote_ip, auto_port = next_values(core)
@@ -145,6 +141,16 @@ async def provision(job_id, host, ssh_port, username, password, private_key,
         iran_ip = core.get('public_ip')
         if not iran_ip:
             raise RuntimeError('public_ip ایران در config نیست')
+
+        port_plan = validate_plan(mappings or [])
+        if port_plan:
+            job_set(job_id, message=f'{len(port_plan)} Port Mapping بررسی شد و تداخلی ندارد')
+
+        job_set(job_id, message='نصب/به‌روزرسانی TP27 روی سرور خارج')
+        cmd = f'curl -fsSL {shlex.quote(RAW + "/install.sh")} | bash -s -- exit'
+        r = await conn.run(cmd, check=False, timeout=180)
+        if r.exit_status != 0:
+            raise RuntimeError((r.stderr or r.stdout or 'remote install failed').strip())
 
         job_set(job_id, message=f'ساخت هویت mTLS برای {eid}')
         client_cert, client_key = ensure_client_cert(eid, iran_ip)
@@ -193,8 +199,15 @@ async def provision(job_id, host, ssh_port, username, password, private_key,
         if not online:
             raise RuntimeError('سرویس ساخته شد اما Ping تونل پاسخ نداد')
 
+        applied = []
+        if port_plan:
+            job_set(job_id, message='اعمال Port Mapping های انتخاب‌شده روی IP ایران')
+            applied = apply_plan(eid, port_plan)
+            job_set(job_id, message=f'{len(applied)} Port Mapping فعال شد')
+
         result = {'id':eid,'interface':iface,'local_ip':local_ip,
-                  'remote_ip':remote_addr,'endpoint':host,'port':port}
+                  'remote_ip':remote_addr,'endpoint':host,'port':port,
+                  'mappings': applied}
         job_set(job_id, state='done', message=f'{eid} ONLINE شد', result=result)
     except Exception as e:
         job_set(job_id, state='failed', message=f'خطا: {e}', error=str(e))
