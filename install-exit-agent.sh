@@ -21,6 +21,66 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y python3-venv ca-certificates curl
 
+probe_controller() {
+  local base="$1"
+  local extra=()
+  [[ "$MODE" == "--insecure" ]] && extra+=(--insecure)
+  curl "${extra[@]}" -fsS --connect-timeout 5 --max-time 10 \
+    "$base/api/control-key" >/dev/null 2>&1
+}
+
+select_controller() {
+  local requested="$1"
+  local host standard
+  host="$(python3 - "$requested" <<'PY'
+from urllib.parse import urlsplit
+import sys
+u=urlsplit(sys.argv[1])
+print(u.hostname or '')
+PY
+)"
+  [[ -n "$host" ]] || return 1
+  standard="https://$host"
+
+  echo "===== CONTROLLER CONNECTIVITY ====="
+  echo "Trying: $requested"
+  if probe_controller "$requested"; then
+    echo "Controller reachable: $requested"
+    printf '%s\n' "$requested"
+    return 0
+  fi
+
+  if [[ "$standard" != "$requested" ]]; then
+    echo "Direct endpoint failed; trying standard HTTPS: $standard"
+    if probe_controller "$standard"; then
+      echo "Controller reachable: $standard"
+      printf '%s\n' "$standard"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+SELECTED="$(select_controller "$CONTROLLER" | tail -n 1 || true)"
+if [[ -z "$SELECTED" || "$SELECTED" != https://* ]]; then
+  echo "ERROR: controller is not reachable from this exit server."
+  echo "Tried: $CONTROLLER"
+  HOST="$(python3 - "$CONTROLLER" <<'PY'
+from urllib.parse import urlsplit
+import sys
+u=urlsplit(sys.argv[1])
+print(u.hostname or '')
+PY
+)"
+  [[ -n "$HOST" ]] && echo "Also tried: https://$HOST"
+  echo "This is a network path / firewall / provider reachability problem between the exit server and the Iran controller."
+  exit 6
+fi
+CONTROLLER="$SELECTED"
+
+echo "Selected controller: $CONTROLLER"
+
 CORE_INSTALLER="$(mktemp /tmp/tp27-core-install.XXXXXX.sh)"
 trap 'rm -f "$CORE_INSTALLER"' EXIT
 curl -fsSL "$RAW/install.sh" -o "$CORE_INSTALLER"
@@ -62,11 +122,19 @@ if ! systemctl is-active --quiet tp27-exit-agent.service; then
   exit 5
 fi
 
+AGENT_VERSION="$(python3 - /opt/tp27-exit-agent/tp27-exit-agent.py <<'PY'
+import re,sys
+s=open(sys.argv[1],encoding='utf-8').read()
+m=re.search(r"^VERSION\s*=\s*['\"]([^'\"]+)",s,re.M)
+print(m.group(1) if m else 'unknown')
+PY
+)"
+
 echo "============================================================"
 echo " TP27 EXIT AGENT READY"
 echo " Controller: $CONTROLLER"
-echo " Agent version: 1.3.0"
-echo " Core data-plane: GRE FAST + TLS fallback"
+echo " Agent version: $AGENT_VERSION"
+echo " Core data-plane: AUTO GRE + GRE/UDP FOU + TLS fallback"
 echo " Service: active"
 echo " Config: /etc/tp27/exit-agent.json"
 echo "============================================================"
