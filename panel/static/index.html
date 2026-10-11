@@ -11,18 +11,31 @@
   <header class="top">
     <div class="logo">TP27 <b>Control</b></div>
     <div class="actions">
-      <button class="btn" onclick="loadStatus()">بروزرسانی</button>
+      <button class="btn" onclick="refreshAll()">بروزرسانی</button>
       <a class="btn link" href="/logout">خروج</a>
     </div>
   </header>
 
   <section class="stats">
     <article class="card"><span class="muted">IP ایران</span><strong id="publicIp">-</strong></article>
+    <article class="card"><span class="muted">Agent</span><strong id="agentCount">0</strong></article>
     <article class="card"><span class="muted">خروجی‌ها</span><strong id="exitCount">0</strong></article>
     <article class="card"><span class="muted">آنلاین</span><strong id="onlineCount">0</strong></article>
   </section>
 
   <main class="main">
+    <section class="card">
+      <div class="section-title">
+        <h3>سرورهای خارج</h3>
+        <div class="actions">
+          <button class="btn small" type="button" onclick="showEnrollment()">توکن اتصال</button>
+          <button class="btn small" type="button" onclick="rotateEnrollment()">توکن جدید</button>
+        </div>
+      </div>
+      <div id="agentList"><div class="muted">در حال دریافت...</div></div>
+      <div id="enrollmentBox" class="job muted hidden"></div>
+    </section>
+
     <section class="card">
       <div class="section-title"><h3>تونل‌ها</h3></div>
       <div id="exitList"><div class="muted">در حال دریافت...</div></div>
@@ -32,15 +45,21 @@
       <h3>ساخت تونل</h3>
 
       <div class="form-grid">
+        <label>Agent خارج<select id="agentId"><option value="">SSH دستی</option></select></label>
         <label>IP سرور خارج<input id="host" placeholder="168.222.49.180"></label>
-        <label>پورت SSH<input id="sshPort" type="number" value="22"></label>
-        <label>کاربر SSH<input id="sshUser" value="root"></label>
         <label>شناسه<input id="exitId" placeholder="exit01"></label>
         <label>پورت Tunnel<input id="tunnelPort" type="number" placeholder="خودکار"></label>
-        <label>رمز SSH<input id="password" type="password" autocomplete="new-password"></label>
       </div>
 
-      <label>Private Key<textarea id="privateKey" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label>
+      <details class="ssh-fallback" id="sshFallback">
+        <summary>SSH دستی</summary>
+        <div class="form-grid">
+          <label>پورت SSH<input id="sshPort" type="number" value="22"></label>
+          <label>کاربر SSH<input id="sshUser" value="root"></label>
+          <label>رمز SSH<input id="password" type="password" autocomplete="new-password"></label>
+        </div>
+        <label>Private Key<textarea id="privateKey" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label>
+      </details>
 
       <div class="ports-title">
         <h4>پورت‌ها</h4>
@@ -56,7 +75,7 @@
       <div id="portRows"></div>
 
       <div class="row buttons">
-        <button class="btn" onclick="preflight()">تست SSH</button>
+        <button class="btn" onclick="preflight()">تست اتصال</button>
         <button class="btn primary" onclick="addExit()">ساخت تونل</button>
       </div>
       <div id="job" class="job muted">آماده</div>
