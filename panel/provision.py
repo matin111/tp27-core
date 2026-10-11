@@ -96,26 +96,76 @@ def job_set(job_id, state=None, message=None, error=None, result=None):
     return j
 
 
+def ssh_error_text(exc):
+    name = exc.__class__.__name__
+    raw = str(exc).strip()
+    low = raw.lower()
+
+    if name == 'PermissionDenied' or 'permission denied' in low:
+        return 'احراز هویت SSH رد شد؛ نام کاربری/رمز یا Private Key را بررسی کنید.'
+    if name in {'ConnectionLost', 'DisconnectError'} or 'connection closed' in low or 'connection lost' in low:
+        return 'سرور خارج اتصال SSH را قبل از تکمیل ورود بست. sshd/MaxStartups/ACL و لاگ SSH سرور خارج را بررسی کنید.'
+    if name in {'ConnectionRefusedError'} or 'connection refused' in low:
+        return 'پورت SSH روی سرور خارج اتصال را رد کرد.'
+    if name in {'TimeoutError', 'TimeoutError'} or 'timed out' in low or 'timeout' in low:
+        return 'اتصال SSH Timeout شد؛ IP، پورت و Firewall مسیر را بررسی کنید.'
+    if 'no matching' in low:
+        return f'الگوریتم SSH مشترک پیدا نشد: {raw}'
+    if isinstance(exc, OSError):
+        detail = raw or getattr(exc, 'strerror', '') or name
+        return f'خطای شبکه SSH: {detail}'
+    return f'{name}: {raw}' if raw else f'{name}: اتصال SSH ناموفق بود و سرور جزئیات بیشتری برنگرداند.'
+
+
 async def open_ssh(host, port, username, password=None, private_key=None):
     kwargs = dict(host=host, port=port, username=username, known_hosts=None,
-                  connect_timeout=12, login_timeout=15)
-    if password:
+                  connect_timeout=12, login_timeout=18)
+
+    # If a password was supplied, do not waste attempts on local agent/default keys.
+    # This also makes errors deterministic on servers with strict MaxAuthTries.
+    if password and not private_key:
         kwargs['password'] = password
-    if private_key:
+        kwargs['client_keys'] = []
+        kwargs['agent_path'] = None
+    elif private_key:
         kwargs['client_keys'] = [asyncssh.import_private_key(private_key)]
+        kwargs['agent_path'] = None
+        if password:
+            kwargs['password'] = password
+    elif password:
+        kwargs['password'] = password
+
     return await asyncssh.connect(**kwargs)
 
 
 async def preflight(host, port, username, password=None, private_key=None):
-    conn = await open_ssh(host, port, username, password, private_key)
+    if not password and not private_key:
+        return {'ok': False, 'error': 'رمز SSH یا Private Key لازم است.', 'error_type': 'MissingCredential'}
+
+    conn = None
     try:
+        conn = await open_ssh(host, port, username, password, private_key)
         key = conn.get_server_host_key().get_fingerprint()
-        r = await conn.run('printf "TP27_OK\\n"; id -u; hostname', check=False)
-        return {'ok': r.exit_status == 0, 'fingerprint': key,
-                'stdout': r.stdout.strip(), 'stderr': r.stderr.strip()}
+        r = await conn.run('printf "TP27_OK\\n"; id -u; hostname', check=False, timeout=12)
+        lines = [x.strip() for x in r.stdout.splitlines() if x.strip()]
+        is_root = len(lines) >= 2 and lines[1] == '0'
+        if r.exit_status != 0:
+            return {'ok': False, 'error': (r.stderr or 'فرمان تست SSH اجرا نشد').strip(),
+                    'fingerprint': key, 'stdout': r.stdout.strip(), 'stderr': r.stderr.strip()}
+        if not is_root:
+            return {'ok': False, 'error': 'اتصال SSH برقرار شد اما کاربر دسترسی root ندارد.',
+                    'fingerprint': key, 'stdout': r.stdout.strip(), 'stderr': r.stderr.strip()}
+        return {'ok': True, 'fingerprint': key, 'stdout': r.stdout.strip(),
+                'stderr': r.stderr.strip(), 'auth': 'private-key' if private_key else 'password'}
+    except Exception as exc:
+        return {'ok': False, 'error': ssh_error_text(exc), 'error_type': exc.__class__.__name__}
     finally:
-        conn.close()
-        await conn.wait_closed()
+        if conn:
+            conn.close()
+            try:
+                await conn.wait_closed()
+            except Exception:
+                pass
 
 
 async def provision(job_id, host, ssh_port, username, password, private_key,
@@ -126,8 +176,9 @@ async def provision(job_id, host, ssh_port, username, password, private_key,
         conn = await open_ssh(host, ssh_port, username, password, private_key)
         key = conn.get_server_host_key().get_fingerprint()
         job_set(job_id, message=f'SSH برقرار شد؛ HostKey={key}')
-        probe = await conn.run('id -u && hostname', check=False)
-        if probe.exit_status != 0 or probe.stdout.splitlines()[0].strip() != '0':
+        probe = await conn.run('id -u && hostname', check=False, timeout=12)
+        lines = [x.strip() for x in probe.stdout.splitlines() if x.strip()]
+        if probe.exit_status != 0 or not lines or lines[0] != '0':
             raise RuntimeError('Provisioning نیاز به دسترسی root دارد')
 
         core = load_json(CORE_CONFIG)
@@ -209,8 +260,11 @@ async def provision(job_id, host, ssh_port, username, password, private_key,
                   'remote_ip':remote_addr,'endpoint':host,'port':port,
                   'mappings': applied}
         job_set(job_id, state='done', message=f'{eid} ONLINE شد', result=result)
-    except Exception as e:
-        job_set(job_id, state='failed', message=f'خطا: {e}', error=str(e))
+    except Exception as exc:
+        detail = ssh_error_text(exc) if exc.__class__.__name__ in {
+            'PermissionDenied','ConnectionLost','DisconnectError','ConnectionRefusedError','TimeoutError'
+        } else (str(exc).strip() or f'{exc.__class__.__name__}: عملیات ناموفق بود')
+        job_set(job_id, state='failed', message=f'خطا: {detail}', error=detail)
     finally:
         if conn:
             conn.close()
