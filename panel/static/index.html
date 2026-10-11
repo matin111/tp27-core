@@ -9,10 +9,7 @@
 <body>
 <div class="wrap">
   <header class="top">
-    <div>
-      <div class="logo">TP27 <b>Control</b></div>
-      <div class="muted">پنل مستقل مدیریت تونل چند سروره</div>
-    </div>
+    <div class="logo">TP27 <b>Control</b></div>
     <div class="actions">
       <button class="btn" onclick="loadStatus()">بروزرسانی</button>
       <a class="btn link" href="/logout">خروج</a>
@@ -27,37 +24,29 @@
 
   <main class="main">
     <section class="card">
-      <div class="section-title">
-        <h3>تونل‌ها و پورت‌ها</h3>
-        <span class="muted">Health هر ۱۰ ثانیه بروزرسانی می‌شود</span>
-      </div>
+      <div class="section-title"><h3>تونل‌ها</h3></div>
       <div id="exitList"><div class="muted">در حال دریافت...</div></div>
     </section>
 
-    <aside class="card builder">
-      <h3>ساخت تونل جدید</h3>
-      <p class="muted">Credential فقط برای همین عملیات استفاده می‌شود و ذخیره نمی‌شود.</p>
+    <section class="card builder">
+      <h3>ساخت تونل</h3>
 
-      <label>IP سرور خارج<input id="host" placeholder="168.222.49.180"></label>
-      <div class="row">
+      <div class="form-grid">
+        <label>IP سرور خارج<input id="host" placeholder="168.222.49.180"></label>
         <label>پورت SSH<input id="sshPort" type="number" value="22"></label>
         <label>کاربر SSH<input id="sshUser" value="root"></label>
+        <label>شناسه<input id="exitId" placeholder="exit01"></label>
+        <label>پورت Tunnel<input id="tunnelPort" type="number" placeholder="خودکار"></label>
+        <label>رمز SSH<input id="password" type="password" autocomplete="new-password"></label>
       </div>
-      <div class="row">
-        <label>شناسه اختیاری<input id="exitId" placeholder="exit01"></label>
-        <label>پورت خود Tunnel <span class="hint">اختیاری</span><input id="tunnelPort" type="number" placeholder="خودکار"></label>
-      </div>
-      <label>رمز SSH<input id="password" type="password" autocomplete="new-password"></label>
-      <label>یا Private Key<textarea id="privateKey" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label>
+
+      <label>Private Key<textarea id="privateKey" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label>
 
       <div class="ports-title">
-        <div>
-          <h4>پورت‌های سرویس</h4>
-          <div class="muted">پیش‌فرض پورت ایران و خارج یکسان است. هر ردیف را می‌توانی دستی تغییر یا حذف کنی.</div>
-        </div>
+        <h4>پورت‌ها</h4>
         <div class="actions">
-          <button class="btn small" type="button" onclick="standardPorts()">پورت‌های استاندارد</button>
-          <button class="btn small primary" type="button" onclick="addPortRow()">+ پورت جدید</button>
+          <button class="btn small" type="button" onclick="standardPorts()">استاندارد</button>
+          <button class="btn small primary" type="button" onclick="addPortRow()">+ پورت</button>
         </div>
       </div>
 
@@ -65,14 +54,13 @@
         <span>سرویس</span><span>نوع</span><span>پورت ایران</span><span>پورت خارج</span><span></span>
       </div>
       <div id="portRows"></div>
-      <div class="muted port-note">Cisco، OpenVPN، WireGuard، L2TP یا هر سرویس TCP/UDP دیگری قابل اضافه‌کردن است.</div>
 
       <div class="row buttons">
-        <button class="btn" onclick="preflight()">تست اتصال SSH</button>
-        <button class="btn primary" onclick="addExit()">نصب و اتصال خودکار</button>
+        <button class="btn" onclick="preflight()">تست SSH</button>
+        <button class="btn primary" onclick="addExit()">ساخت تونل</button>
       </div>
-      <div id="job" class="job muted">هنوز عملیاتی شروع نشده است.</div>
-    </aside>
+      <div id="job" class="job muted">آماده</div>
+    </section>
   </main>
 </div>
 <script src="/static/app.js"></script>
