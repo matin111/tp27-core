@@ -70,7 +70,7 @@ python3 -m venv /opt/tp27-panel/venv
 curl -fsSL "$RAW/panel/requirements.txt" -o /opt/tp27-panel/requirements.txt
 /opt/tp27-panel/venv/bin/pip install -r /opt/tp27-panel/requirements.txt
 
-for f in app.py auth.py provision.py ports.py; do
+for f in app.py auth.py provision.py ports.py portplan.py; do
   curl -fsSL "$RAW/panel/$f" -o "/opt/tp27-panel/$f"
 done
 for f in index.html login.html style.css app.js; do
