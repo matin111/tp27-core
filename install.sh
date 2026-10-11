@@ -10,12 +10,12 @@ RAW="${TP27_REPO_RAW:-https://raw.githubusercontent.com/matin111/tp27-core/main}
 export DEBIAN_FRONTEND=noninteractive
 
 echo "============================================================"
-echo " TP27 CORE v0.2"
+echo " TP27 CORE v0.3 GRE FAST"
 echo " ROLE: $ROLE"
 echo "============================================================"
 
 apt-get update
-apt-get install -y socat openssl iproute2 iptables jq curl ca-certificates python3 openssh-client iputils-ping
+apt-get install -y socat openssl iproute2 iptables jq curl ca-certificates python3 openssh-client iputils-ping kmod
 
 install -d -m 700 /etc/tp27 /etc/tp27/certs /etc/tp27/exits /etc/tp27/backups
 install -d -m 755 /var/lib/tp27 /var/log/tp27 /usr/local/lib/tp27 /usr/local/bin
@@ -62,5 +62,5 @@ systemctl daemon-reload
 tp27 bootstrap --role "$ROLE"
 
 echo
-echo "TP27 v0.2 installed. CLI: tp27"
+echo "TP27 v0.3 GRE FAST installed. CLI: tp27"
 tp27 status
