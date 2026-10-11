@@ -16,7 +16,7 @@ from provision import (
     CERTS, CORE_CONFIG, EXITS, JOBS, atomic_json, load_json,
     preflight, provision, run, validate_id,
 )
-from provision_agent import provision_via_agent
+from provision_gre import provision_gre_via_agent
 from provision_password import preflight_password, provision_password
 from ports import (
     PORT_CONFIG, add_custom, apply_profile, atomic_json as ports_atomic_json,
@@ -445,9 +445,9 @@ async def add_exit(request: Request, body: ExitCreate):
     JOBS[job_id] = {'id': job_id, 'state': 'queued', 'messages': []}
 
     if body.agent_id:
-        asyncio.create_task(provision_via_agent(
+        asyncio.create_task(provision_gre_via_agent(
             job_id, body.agent_id, body.id,
-            body.tunnel_port, body.mtu, mapping_plan,
+            body.mtu, mapping_plan,
         ))
     elif body.password and not body.private_key:
         asyncio.create_task(provision_password(
