@@ -8,14 +8,11 @@ CFG="/etc/tp27/exits/${ID}.json"
 ROLE="$(jq -r '.role' "$CFG")"
 IFACE="$(jq -r '.interface' "$CFG")"
 ADDR="$(jq -r '.tunnel_ip' "$CFG")"
-MTU="$(jq -r '.mtu // 1280' "$CFG")"
+MTU="$(jq -r '.mtu // 1400' "$CFG")"
 
 [[ -n "$IFACE" && "$IFACE" != "null" ]] || { echo "invalid interface" >&2; exit 2; }
 [[ -n "$ADDR" && "$ADDR" != "null" ]] || { echo "invalid tunnel_ip" >&2; exit 2; }
 
-# TP27 currently allocates /30 pairs. For a TUN interface, configure the two
-# usable hosts explicitly as point-to-point peers instead of treating the link
-# as an Ethernet-like connected subnet.
 read -r LOCAL_IP PEER_IP PREFIX <<<"$(python3 - "$ADDR" <<'PY'
 import ipaddress, sys
 iface = ipaddress.ip_interface(sys.argv[1])
@@ -27,6 +24,10 @@ PY
 )"
 
 IPT="$(command -v iptables || true)"
+GRE_LOCAL_PUBLIC=""
+GRE_REMOTE_PUBLIC=""
+GRE_KEY=""
+SOCAT_PID=""
 
 ensure_chain_hook() {
   local table="$1" parent="$2" chain="$3"
@@ -53,7 +54,6 @@ remove_rule() {
 
 setup_tun_firewall() {
   [[ -n "$IPT" ]] || return 0
-  # Dedicated TP27 chains only. Never flush or rewrite global firewall rules.
   ensure_chain_hook filter INPUT TP27_TUN_IN
   ensure_chain_hook filter OUTPUT TP27_TUN_OUT
   ensure_chain_hook filter FORWARD TP27_TUN_FWD
@@ -70,19 +70,75 @@ cleanup_tun_firewall() {
   remove_rule filter TP27_TUN_FWD -o "$IFACE" -j ACCEPT
 }
 
+setup_gre_underlay_firewall() {
+  [[ -n "$IPT" && -n "$GRE_LOCAL_PUBLIC" && -n "$GRE_REMOTE_PUBLIC" ]] || return 0
+  ensure_chain_hook filter INPUT TP27_GRE_IN
+  ensure_rule filter TP27_GRE_IN -p 47 -s "$GRE_REMOTE_PUBLIC/32" -d "$GRE_LOCAL_PUBLIC/32" -j ACCEPT
+}
+
+cleanup_gre_underlay_firewall() {
+  [[ -n "$IPT" && -n "$GRE_LOCAL_PUBLIC" && -n "$GRE_REMOTE_PUBLIC" ]] || return 0
+  remove_rule filter TP27_GRE_IN -p 47 -s "$GRE_REMOTE_PUBLIC/32" -d "$GRE_LOCAL_PUBLIC/32" -j ACCEPT
+}
+
 ip link del "$IFACE" 2>/dev/null || true
 
 cleanup(){
   local rc=$?
   [[ -n "${SOCAT_PID:-}" ]] && kill "$SOCAT_PID" 2>/dev/null || true
+  cleanup_gre_underlay_firewall || true
   cleanup_tun_firewall || true
   ip link del "$IFACE" 2>/dev/null || true
   exit "$rc"
 }
 trap cleanup EXIT INT TERM
 
-# Create a bare TUN fd. TP27 configures IPv4/MTU explicitly because socat
-# versions differ in how they interpret TUN:<address/prefix>.
+setup_common_interface() {
+  sysctl -q -w "net.ipv4.conf.${IFACE}.rp_filter=0" 2>/dev/null || true
+  setup_tun_firewall
+}
+
+if [[ "$ROLE" == "gre-iran" || "$ROLE" == "gre-exit" ]]; then
+  GRE_LOCAL_PUBLIC="$(jq -r '.local_public' "$CFG")"
+  GRE_REMOTE_PUBLIC="$(jq -r '.remote_public' "$CFG")"
+  GRE_KEY="$(jq -r '.gre_key' "$CFG")"
+  TXQLEN="$(jq -r '.txqueuelen // 1000' "$CFG")"
+
+  python3 - "$GRE_LOCAL_PUBLIC" "$GRE_REMOTE_PUBLIC" "$GRE_KEY" <<'PY'
+import ipaddress, sys
+ipaddress.ip_address(sys.argv[1])
+ipaddress.ip_address(sys.argv[2])
+key=int(sys.argv[3])
+if key < 1 or key > 4294967295:
+    raise SystemExit('invalid GRE key')
+PY
+
+  command -v modprobe >/dev/null 2>&1 && modprobe ip_gre 2>/dev/null || true
+  setup_gre_underlay_firewall
+
+  ip tunnel add "$IFACE" mode gre \
+    local "$GRE_LOCAL_PUBLIC" remote "$GRE_REMOTE_PUBLIC" \
+    ttl 255 key "$GRE_KEY"
+  ip link set dev "$IFACE" mtu "$MTU" txqueuelen "$TXQLEN"
+  ip addr flush dev "$IFACE" scope global 2>/dev/null || true
+  ip addr add "$ADDR" dev "$IFACE"
+  ip link set dev "$IFACE" up
+  setup_common_interface
+
+  echo "TP27_GRE_READY role=$ROLE iface=$IFACE local_public=$GRE_LOCAL_PUBLIC remote_public=$GRE_REMOTE_PUBLIC addr=$ADDR peer=${PEER_IP:-none} mtu=$MTU key=$GRE_KEY" >&2
+  ip -br -4 addr show dev "$IFACE" >&2 || true
+  ip -4 route show dev "$IFACE" >&2 || true
+  ip -s link show dev "$IFACE" >&2 || true
+
+  # Kernel GRE is the data plane; keep the systemd service alive only so stop,
+  # restart and failure management remain consistent with the other TP27 modes.
+  while true; do
+    sleep 3600 &
+    wait $! || true
+  done
+fi
+
+# Userspace mTLS fallback transport.
 TUN_SPEC="TUN,tun-name=${IFACE},tun-type=tun,iff-no-pi"
 
 case "$ROLE" in
@@ -149,8 +205,7 @@ for _ in $(seq 1 80); do
     fi
 
     ip link set dev "$IFACE" up
-    sysctl -q -w "net.ipv4.conf.${IFACE}.rp_filter=0" 2>/dev/null || true
-    setup_tun_firewall
+    setup_common_interface
     READY=1
     break
   fi
