@@ -1,0 +1,13 @@
+[Unit]
+Description=TP27 Service Port Mapping Reconcile
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/tp27-panel
+ExecStart=/opt/tp27-panel/venv/bin/python -c "from ports import reconcile; reconcile()"
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
