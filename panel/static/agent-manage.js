@@ -83,12 +83,12 @@ function renderAgentManage(data){
     </div>`).join(''):'<div class="muted">این سرور Tunnel وابسته ندارد.</div>';
 
   const statusText=a.online?'آنلاین':'آفلاین';
-  const legacy=!agentVersionAtLeast(a.version,1,2,0);
+  const greReady=agentVersionAtLeast(a.version,1,3,0);
   $('agentManageBody').innerHTML=`
     <div class="manage-summary">
       <div><span class="muted">وضعیت</span><strong class="${a.online?'status-good':'status-bad'}">${statusText}</strong></div>
       <div><span class="muted">IP</span><strong>${esc(a.public_ip||'-')}</strong></div>
-      <div><span class="muted">نسخه Agent</span><strong class="${legacy?'status-bad':'status-good'}">v${esc(a.version||'-')}</strong></div>
+      <div><span class="muted">نسخه Agent</span><strong class="${greReady?'status-good':'status-bad'}">v${esc(a.version||'-')}</strong></div>
       <div><span class="muted">Tunnelها</span><strong>${tunnels.length}</strong></div>
     </div>
     <div class="manage-summary agent-extra-summary">
@@ -97,7 +97,7 @@ function renderAgentManage(data){
       <div><span class="muted">آخرین ارتباط</span><strong>${esc(formatAgentTime(a.last_seen))}</strong></div>
       <div><span class="muted">ثبت اولیه</span><strong>${esc(formatAgentTime(a.created_at))}</strong></div>
     </div>
-    ${legacy?'<div class="job">برای REVERSE FAST، Agent باید به v1.2.0 ارتقا پیدا کند.</div>':''}
+    ${greReady?'':'<div class="job">برای GRE FAST، Agent باید به v1.3.0 یا جدیدتر ارتقا پیدا کند.</div>'}
     <div class="ports-title"><h4>Tunnelهای این سرور</h4></div>
     <div>${tunnelHtml}</div>
     <div id="agentStatusOutput" class="job muted">آماده</div>`;
@@ -142,7 +142,9 @@ async function checkManagedAgent(){
     const queued=await api('/api/agents/'+encodeURIComponent(managedAgentId)+'/commands',{
       method:'POST',body:JSON.stringify({action:'status',args:{}})
     });
-    await pollManagedAgentCommand(queued.command_id);
+    const commandId=queued.command_id||queued.id;
+    if(!commandId)throw new Error('شناسه فرمان از Controller دریافت نشد');
+    await pollManagedAgentCommand(commandId);
   }catch(e){out.textContent='خطا: '+e.message}
 }
 
@@ -183,12 +185,12 @@ async function upgradeManagedAgent(){
       const q=await api('/api/agents/'+encodeURIComponent(managedAgentId)+'/commands',{
         method:'POST',body:JSON.stringify({action:'upgrade_agent',args:{}})
       });
-      await pollAgentUpgrade(q.command_id);
+      const commandId=q.command_id||q.id;
+      if(!commandId)throw new Error('شناسه فرمان ارتقا از Controller دریافت نشد');
+      await pollAgentUpgrade(commandId);
       return;
     }
 
-    // Legacy agents cannot self-upgrade because that capability did not exist.
-    // Generate a one-time signed enrollment installer from inside the panel.
     const r=await api('/api/agents/enrollment/rotate',{method:'POST',body:'{}'});
     const cmd=`curl -fsSL https://raw.githubusercontent.com/matin111/tp27-core/main/install-exit-agent.sh | bash -s -- '${location.origin}' '${r.token}'`;
     await copyTextValue(cmd);
