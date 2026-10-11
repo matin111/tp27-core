@@ -1,10 +1,12 @@
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let agents=[];
+let currentStatus={exits:[]};
 let wizardBaseline=new Set();
 let wizardTimer=null;
 let wizardReadyAgent=null;
 let activeTunnelId=null;
+let managedTunnelId=null;
 
 async function api(url,opt={}){
   const r=await fetch(url,{credentials:'same-origin',headers:{'Content-Type':'application/json',...(opt.headers||{})},...opt});
@@ -22,6 +24,7 @@ function mappingBadges(items=[]){
 async function loadStatus(){
   try{
     const s=await api('/api/status');
+    currentStatus=s;
     $('publicIp').textContent=s.public_ip||'-';
     $('exitCount').textContent=s.exits.length;
     $('onlineCount').textContent=s.exits.filter(x=>x.healthy).length;
@@ -33,8 +36,9 @@ async function loadStatus(){
           ${mappingBadges(x.mappings)}
         </div>
         <div class="actions tunnel-actions">
+          <button class="btn small primary" type="button" onclick="openTunnelManage('${esc(x.id)}')">مدیریت</button>
           <button class="btn small" type="button" onclick="diagnoseTunnel('${esc(x.id)}')">بررسی</button>
-          <button class="btn small ${x.healthy?'':'primary'}" type="button" onclick="repairTunnel('${esc(x.id)}')">تعمیر</button>
+          <button class="btn small" type="button" onclick="repairTunnel('${esc(x.id)}')">Restart</button>
         </div>
       </div>`).join(''):'<div class="muted">بدون تونل</div>';
   }catch(e){$('exitList').innerHTML='<div class="muted">'+esc(e.message)+'</div>'}
@@ -71,18 +75,11 @@ function selectedAgent(){
 
 function connectionPayload(){
   const a=selectedAgent();
-  return{
-    agent_id:a?a.agent_id:null,
-    host:a?(a.public_ip||''):'',
-    port:22,
-    username:'root',
-    password:null,
-    private_key:null
-  };
+  return{agent_id:a?a.agent_id:null,host:a?(a.public_ip||''):'',port:22,username:'root',password:null,private_key:null};
 }
 
-function collectMappings(){
-  return [...document.querySelectorAll('.port-row')].map((row,i)=>{
+function collectRows(selector){
+  return [...document.querySelectorAll(selector)].map((row,i)=>{
     const service=row.querySelector('.p-service').value.trim();
     const proto=row.querySelector('.p-proto').value;
     const listen_port=Number(row.querySelector('.p-iran').value);
@@ -94,6 +91,9 @@ function collectMappings(){
   });
 }
 
+function collectMappings(){return collectRows('#portRows .port-row')}
+function collectManageMappings(){return collectRows('#managePortRows .port-row')}
+
 function payload(){
   const p=connectionPayload();
   if(!p.agent_id)throw new Error('سرور خارج را انتخاب کنید');
@@ -104,35 +104,37 @@ function payload(){
   return p;
 }
 
-function addPortRow(data={}){
+function createPortRow(target,data={}){
   const row=document.createElement('div');
   row.className='port-row';
   const service=esc(data.service||'custom');
   const listen=data.listen_port??'';
-  const target=data.target_port??listen;
+  const targetPort=data.target_port??listen;
   const proto=(data.proto||'tcp').toLowerCase();
   row.innerHTML=`
     <input class="p-service" value="${service}" placeholder="service">
     <select class="p-proto"><option value="tcp" ${proto==='tcp'?'selected':''}>TCP</option><option value="udp" ${proto==='udp'?'selected':''}>UDP</option></select>
     <input class="p-iran" type="number" min="1" max="65535" value="${listen}" placeholder="ایران">
-    <input class="p-exit" type="number" min="1" max="65535" value="${target}" placeholder="خارج">
+    <input class="p-exit" type="number" min="1" max="65535" value="${targetPort}" placeholder="خارج">
     <button class="btn danger small" type="button" title="حذف">×</button>`;
   row.querySelector('.danger').onclick=()=>row.remove();
-  $('portRows').appendChild(row);
+  $(target).appendChild(row);
 }
 
-function standardPorts(){
-  $('portRows').innerHTML='';
-  [
-    {service:'cisco',proto:'tcp',listen_port:8897,target_port:8897},
-    {service:'cisco',proto:'udp',listen_port:8897,target_port:8897},
-    {service:'openvpn',proto:'tcp',listen_port:9988,target_port:9988},
-    {service:'wireguard',proto:'udp',listen_port:55821,target_port:55821},
-    {service:'l2tp',proto:'udp',listen_port:500,target_port:500},
-    {service:'l2tp',proto:'udp',listen_port:4500,target_port:4500},
-    {service:'l2tp',proto:'udp',listen_port:1701,target_port:1701}
-  ].forEach(addPortRow);
-}
+function standardList(){return[
+  {service:'cisco',proto:'tcp',listen_port:8897,target_port:8897},
+  {service:'cisco',proto:'udp',listen_port:8897,target_port:8897},
+  {service:'openvpn',proto:'tcp',listen_port:9988,target_port:9988},
+  {service:'wireguard',proto:'udp',listen_port:55821,target_port:55821},
+  {service:'l2tp',proto:'udp',listen_port:500,target_port:500},
+  {service:'l2tp',proto:'udp',listen_port:4500,target_port:4500},
+  {service:'l2tp',proto:'udp',listen_port:1701,target_port:1701}
+]}
+
+function addPortRow(data={}){createPortRow('portRows',data)}
+function addManagePortRow(data={}){createPortRow('managePortRows',data)}
+function standardPorts(){$('portRows').innerHTML='';standardList().forEach(addPortRow)}
+function manageStandardPorts(){$('managePortRows').innerHTML='';standardList().forEach(addManagePortRow)}
 
 async function runPreflight(show=true){
   if(!selectedAgent())throw new Error('سرور خارج را انتخاب کنید');
@@ -162,19 +164,95 @@ async function pollJob(id){
   try{
     const r=await api('/api/jobs/'+id);
     $('job').innerHTML='<b>'+esc(r.state)+'</b><br>'+r.messages.map(x=>esc(x.text)).join('<br>');
-    if(r.state==='done'){
-      refreshAll();return;
-    }
-    if(r.state==='failed'){
-      refreshAll();return;
-    }
+    if(r.state==='done'||r.state==='failed'){refreshAll();return}
     setTimeout(()=>pollJob(id),1500);
   }catch(e){$('job').textContent=e.message}
 }
 
-function diagFlag(label,ok){
-  return `<div class="diag-row"><span class="dot ${ok?'good':'bad'}"></span><span>${esc(label)}</span><b>${ok?'سالم':'خطا'}</b></div>`;
+function tunnelById(id){return (currentStatus.exits||[]).find(x=>x.id===id)||null}
+
+function openTunnelManage(id){
+  const x=tunnelById(id);
+  if(!x)return;
+  managedTunnelId=id;
+  $('manageTitle').textContent='مدیریت تونل '+id;
+  $('manageHealth').textContent=x.healthy?'آنلاین':'آفلاین';
+  $('manageHealth').className=x.healthy?'status-good':'status-bad';
+  $('manageEndpoint').textContent=x.endpoint||'-';
+  $('manageTunnelPort').textContent=x.port||'-';
+  $('manageInterface').textContent=x.interface||'-';
+  $('managePortRows').innerHTML='';
+  (x.mappings||[]).forEach(addManagePortRow);
+  $('manageMessage').textContent='آماده';
+  $('tunnelManage').classList.remove('hidden');
 }
+
+function closeTunnelManage(){
+  $('tunnelManage').classList.add('hidden');
+  managedTunnelId=null;
+}
+
+async function saveManagedPorts(){
+  if(!managedTunnelId)return;
+  const box=$('manageMessage');
+  try{
+    const mappings=collectManageMappings();
+    box.textContent='در حال ذخیره Port Mapping...';
+    const r=await api('/api/exits/'+encodeURIComponent(managedTunnelId)+'/mappings',{method:'PUT',body:JSON.stringify({mappings})});
+    box.textContent=`ذخیره شد · ${r.mappings.length} پورت فعال`;
+    await loadStatus();
+  }catch(e){box.textContent='خطا: '+e.message}
+}
+
+function diagnoseManagedTunnel(){
+  if(!managedTunnelId)return;
+  const id=managedTunnelId;
+  closeTunnelManage();
+  diagnoseTunnel(id);
+}
+
+async function repairManagedTunnel(){
+  if(!managedTunnelId)return;
+  const box=$('manageMessage');
+  box.textContent='در حال Restart هماهنگ ایران و خارج...';
+  try{
+    const d=await api('/api/exits/'+encodeURIComponent(managedTunnelId)+'/repair',{method:'POST',body:'{}'});
+    box.textContent=d.healthy?'تونل آنلاین شد':'Restart انجام شد؛ Tunnel هنوز Health Check را پاس نکرده است';
+    await loadStatus();
+    const x=tunnelById(managedTunnelId);
+    if(x){$('manageHealth').textContent=x.healthy?'آنلاین':'آفلاین';$('manageHealth').className=x.healthy?'status-good':'status-bad'}
+  }catch(e){box.textContent='خطا: '+e.message}
+}
+
+function openDeleteTunnel(){
+  if(!managedTunnelId)return;
+  $('deleteTunnelText').textContent=`تونل «${managedTunnelId}» و Port Mappingهای آن حذف شوند؟ این عملیات سرویس‌های VPN اصلی سرور خارج را حذف نمی‌کند.`;
+  $('deleteTunnelBtn').disabled=false;
+  $('deleteTunnelModal').classList.remove('hidden');
+}
+
+function closeDeleteTunnel(){$('deleteTunnelModal').classList.add('hidden')}
+
+async function confirmDeleteTunnel(){
+  if(!managedTunnelId)return;
+  const id=managedTunnelId;
+  const btn=$('deleteTunnelBtn');
+  btn.disabled=true;
+  btn.textContent='در حال حذف...';
+  try{
+    const r=await api('/api/exits/'+encodeURIComponent(id),{method:'DELETE'});
+    closeDeleteTunnel();
+    closeTunnelManage();
+    $('job').textContent=r.warning?('تونل حذف شد. '+r.warning):'تونل با موفقیت حذف شد';
+    await refreshAll();
+  }catch(e){
+    btn.disabled=false;
+    btn.textContent='حذف کامل';
+    $('deleteTunnelText').textContent='خطا: '+e.message;
+  }
+}
+
+function diagFlag(label,ok){return `<div class="diag-row"><span class="dot ${ok?'good':'bad'}"></span><span>${esc(label)}</span><b>${ok?'سالم':'خطا'}</b></div>`}
 
 function renderDiagnosis(d){
   $('diagTitle').textContent='بررسی تونل '+(d.id||'');
@@ -197,12 +275,8 @@ async function diagnoseTunnel(id){
   $('diagTitle').textContent='در حال بررسی...';
   $('diagBody').innerHTML='<div class="muted">در حال دریافت وضعیت ایران و سرور خارج...</div>';
   $('repairBtn').disabled=true;
-  try{
-    const d=await api('/api/exits/'+encodeURIComponent(id)+'/diagnose');
-    renderDiagnosis(d);
-  }catch(e){
-    $('diagBody').innerHTML='<div class="err">'+esc(e.message)+'</div>';
-  }
+  try{renderDiagnosis(await api('/api/exits/'+encodeURIComponent(id)+'/diagnose'))}
+  catch(e){$('diagBody').innerHTML='<div class="err">'+esc(e.message)+'</div>'}
 }
 
 async function repairTunnel(id){
@@ -211,24 +285,12 @@ async function repairTunnel(id){
   $('diagTitle').textContent='تعمیر تونل '+id;
   $('diagBody').innerHTML='<div class="muted">در حال Restart هماهنگ Link خارج و ایران...</div>';
   $('repairBtn').disabled=true;
-  try{
-    const d=await api('/api/exits/'+encodeURIComponent(id)+'/repair',{method:'POST',body:'{}'});
-    renderDiagnosis(d);
-    await loadStatus();
-  }catch(e){
-    $('diagBody').innerHTML='<div class="err">'+esc(e.message)+'</div>';
-    $('repairBtn').disabled=false;
-  }
+  try{const d=await api('/api/exits/'+encodeURIComponent(id)+'/repair',{method:'POST',body:'{}'});renderDiagnosis(d);await loadStatus()}
+  catch(e){$('diagBody').innerHTML='<div class="err">'+esc(e.message)+'</div>';$('repairBtn').disabled=false}
 }
 
-function repairActiveTunnel(){
-  if(activeTunnelId)repairTunnel(activeTunnelId);
-}
-
-function closeTunnelDiag(){
-  $('tunnelDiag').classList.add('hidden');
-  activeTunnelId=null;
-}
+function repairActiveTunnel(){if(activeTunnelId)repairTunnel(activeTunnelId)}
+function closeTunnelDiag(){$('tunnelDiag').classList.add('hidden');activeTunnelId=null}
 
 function setWizardState(text,state='wait'){
   $('wizardStatus').textContent=text;
@@ -242,7 +304,6 @@ async function openServerWizard(){
   $('wizardReady').classList.add('hidden');
   $('installCommand').textContent='';
   setWizardState('در حال آماده‌سازی...');
-
   try{
     const before=await loadAgents();
     wizardBaseline=new Set(before.map(x=>x.agent_id));
@@ -252,38 +313,23 @@ async function openServerWizard(){
     setWizardState('در انتظار اتصال سرور خارج');
     clearInterval(wizardTimer);
     wizardTimer=setInterval(checkEnrollmentNow,2000);
-  }catch(e){
-    setWizardState(e.message,'bad');
-  }
+  }catch(e){setWizardState(e.message,'bad')}
 }
 
-function closeServerWizard(){
-  $('serverWizard').classList.add('hidden');
-  clearInterval(wizardTimer);
-  wizardTimer=null;
-}
+function closeServerWizard(){$('serverWizard').classList.add('hidden');clearInterval(wizardTimer);wizardTimer=null}
 
 async function copyInstallCommand(){
-  const text=$('installCommand').textContent.trim();
-  if(!text)return;
-  try{
-    await navigator.clipboard.writeText(text);
-    setWizardState('دستور کپی شد؛ روی سرور خارج اجرا کنید');
-  }catch(_){
-    const ta=document.createElement('textarea');
-    ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();
-    setWizardState('دستور کپی شد؛ روی سرور خارج اجرا کنید');
-  }
+  const text=$('installCommand').textContent.trim();if(!text)return;
+  try{await navigator.clipboard.writeText(text);setWizardState('دستور کپی شد؛ روی سرور خارج اجرا کنید')}
+  catch(_){const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();setWizardState('دستور کپی شد؛ روی سرور خارج اجرا کنید')}
 }
 
 async function checkEnrollmentNow(){
   const list=await loadAgents();
   const found=list.find(a=>a.online&&!wizardBaseline.has(a.agent_id));
   if(!found)return;
-  wizardReadyAgent=found;
-  clearInterval(wizardTimer);wizardTimer=null;
-  $('wizardWaiting').classList.add('hidden');
-  $('wizardReady').classList.remove('hidden');
+  wizardReadyAgent=found;clearInterval(wizardTimer);wizardTimer=null;
+  $('wizardWaiting').classList.add('hidden');$('wizardReady').classList.remove('hidden');
   $('readyAgentName').textContent=found.hostname||found.agent_id;
   $('readyAgentMeta').textContent=(found.public_ip||'-')+' · آنلاین';
 }
@@ -292,9 +338,7 @@ function useReadyAgent(){
   if(!wizardReadyAgent)return;
   const sel=$('agentId');
   if([...sel.options].some(o=>o.value===wizardReadyAgent.agent_id))sel.value=wizardReadyAgent.agent_id;
-  closeServerWizard();
-  document.querySelector('.builder').scrollIntoView({behavior:'smooth',block:'start'});
-  $('job').textContent='سرور انتخاب شد';
+  closeServerWizard();document.querySelector('.builder').scrollIntoView({behavior:'smooth',block:'start'});$('job').textContent='سرور انتخاب شد';
 }
 
 async function refreshAll(){await Promise.all([loadStatus(),loadAgents()])}
