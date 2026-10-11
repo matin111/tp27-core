@@ -111,7 +111,7 @@ python3 -m venv /opt/tp27-panel/venv
 curl -fsSL "$RAW/panel/requirements.txt" -o /opt/tp27-panel/requirements.txt
 /opt/tp27-panel/venv/bin/pip install -r /opt/tp27-panel/requirements.txt
 
-for f in app.py auth.py provision.py provision_password.py provision_agent.py agent_control.py ports.py portplan.py; do
+for f in app.py auth.py provision.py provision_password.py provision_agent.py provision_gre.py agent_control.py ports.py portplan.py; do
   curl -fsSL "$RAW/panel/$f" -o "/opt/tp27-panel/$f"
 done
 for f in index.html login.html style.css app.js fast-ui.js agent-manage.js; do
@@ -131,6 +131,7 @@ chmod 600 /opt/tp27-panel/*.py
   /opt/tp27-panel/provision.py \
   /opt/tp27-panel/provision_password.py \
   /opt/tp27-panel/provision_agent.py \
+  /opt/tp27-panel/provision_gre.py \
   /opt/tp27-panel/agent_control.py \
   /opt/tp27-panel/ports.py \
   /opt/tp27-panel/portplan.py
@@ -240,7 +241,7 @@ echo
 echo " Service: $(systemctl is-active tp27-panel.service || true)"
 echo " Port reconcile: $(systemctl is-active tp27-ports-reconcile.service || true)"
 echo " Agent controller: enabled"
-echo " GRE FAST kernel data plane: enabled"
+echo " AUTO GRE kernel data plane: raw GRE + GRE/UDP FOU fallback enabled"
 echo " TLS reverse transport: fallback available"
 if [[ "$SSL_STATE" == "trusted" ]]; then
   echo " Trusted IP certificate and automatic renewal: enabled"
