@@ -1,5 +1,6 @@
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let agents=[];
 
 async function api(url,opt={}){
   const r=await fetch(url,{credentials:'same-origin',headers:{'Content-Type':'application/json',...(opt.headers||{})},...opt});
@@ -24,14 +25,71 @@ async function loadStatus(){
         <div class="exit-main">
           <div><span class="dot ${x.healthy?'good':'bad'}"></span><b>${esc(x.id)}</b></div>
           <div class="muted">${esc(x.endpoint)}:${esc(x.port)} · ${esc(x.interface)} · ${esc(x.remote_ip)}</div>
+          ${x.agent_id?`<div class="muted">Agent: ${esc(x.agent_id)}</div>`:''}
           ${mappingBadges(x.mappings)}
         </div>
       </div>`).join(''):'<div class="muted">بدون تونل</div>';
   }catch(e){$('exitList').innerHTML='<div class="muted">'+esc(e.message)+'</div>'}
 }
 
-function sshPayload(){
+async function loadAgents(){
+  try{
+    const data=await api('/api/agents');
+    agents=data.agents||[];
+    $('agentCount').textContent=agents.filter(x=>x.online).length;
+    $('agentList').innerHTML=agents.length?agents.map(a=>`
+      <div class="exit">
+        <div class="exit-main">
+          <div><span class="dot ${a.online?'good':'bad'}"></span><b>${esc(a.hostname||a.agent_id)}</b></div>
+          <div class="muted">${esc(a.public_ip||'-')} · ${esc(a.agent_id)} · v${esc(a.version||'-')}</div>
+        </div>
+      </div>`).join(''):'<div class="muted">بدون Agent</div>';
+
+    const sel=$('agentId');
+    const current=sel.value;
+    sel.innerHTML='<option value="">SSH دستی</option>'+agents.map(a=>`<option value="${esc(a.agent_id)}" ${a.online?'':'disabled'}>${esc(a.hostname||a.agent_id)} · ${esc(a.public_ip||'-')}${a.online?'':' · offline'}</option>`).join('');
+    if([...sel.options].some(o=>o.value===current&&!o.disabled))sel.value=current;
+    syncAgentSelection();
+  }catch(e){$('agentList').innerHTML='<div class="muted">'+esc(e.message)+'</div>'}
+}
+
+function syncAgentSelection(){
+  const aid=$('agentId').value;
+  const a=agents.find(x=>x.agent_id===aid);
+  if(a){
+    $('host').value=a.public_ip||'';
+    $('host').readOnly=true;
+    $('sshFallback').open=false;
+    $('sshFallback').classList.add('disabled-block');
+  }else{
+    $('host').readOnly=false;
+    $('sshFallback').classList.remove('disabled-block');
+  }
+}
+
+async function showEnrollment(){
+  const box=$('enrollmentBox');
+  try{
+    const r=await api('/api/agents/enrollment');
+    const cmd=`curl -fsSL https://raw.githubusercontent.com/matin111/tp27-core/main/install-exit-agent.sh | bash -s -- ${location.origin} ${r.token}`;
+    box.innerHTML=`<b>Token</b><br><code>${esc(r.token)}</code><br><br><b>Install</b><br><code>${esc(cmd)}</code>`;
+    box.classList.remove('hidden');
+  }catch(e){box.textContent=e.message;box.classList.remove('hidden')}
+}
+
+async function rotateEnrollment(){
+  const box=$('enrollmentBox');
+  try{
+    const r=await api('/api/agents/enrollment/rotate',{method:'POST',body:'{}'});
+    const cmd=`curl -fsSL https://raw.githubusercontent.com/matin111/tp27-core/main/install-exit-agent.sh | bash -s -- ${location.origin} ${r.token}`;
+    box.innerHTML=`<b>Token</b><br><code>${esc(r.token)}</code><br><br><b>Install</b><br><code>${esc(cmd)}</code>`;
+    box.classList.remove('hidden');
+  }catch(e){box.textContent=e.message;box.classList.remove('hidden')}
+}
+
+function connectionPayload(){
   return{
+    agent_id:$('agentId').value||null,
     host:$('host').value.trim(),
     port:Number($('sshPort').value||22),
     username:$('sshUser').value.trim()||'root',
@@ -54,7 +112,7 @@ function collectMappings(){
 }
 
 function payload(){
-  const p=sshPayload();
+  const p=connectionPayload();
   p.id=$('exitId').value.trim()||null;
   p.tunnel_port=Number($('tunnelPort').value)||null;
   p.mtu=1280;
@@ -93,25 +151,24 @@ function standardPorts(){
 }
 
 async function runPreflight(show=true){
-  const r=await api('/api/preflight',{method:'POST',body:JSON.stringify(sshPayload())});
-  if(!r.ok)throw new Error(r.error||r.stderr||'اتصال SSH ناموفق بود');
-  if(show)$('job').textContent='SSH: OK';
+  const r=await api('/api/preflight',{method:'POST',body:JSON.stringify(connectionPayload())});
+  if(!r.ok)throw new Error(r.error||r.stderr||'اتصال ناموفق بود');
+  if(show)$('job').textContent=(r.mode==='agent'?'Agent':'SSH')+': OK';
   return r;
 }
 
 async function preflight(){
-  const j=$('job');j.textContent='تست SSH...';
-  try{await runPreflight(true)}catch(e){j.textContent='SSH: '+e.message}
+  const j=$('job');j.textContent='تست اتصال...';
+  try{await runPreflight(true)}catch(e){j.textContent='خطا: '+e.message}
 }
 
 async function addExit(){
   const j=$('job');
-  j.textContent='بررسی SSH...';
+  j.textContent='بررسی اتصال...';
   try{
     await runPreflight(false);
     j.textContent='شروع ساخت تونل...';
-    const p=payload();
-    const r=await api('/api/exits',{method:'POST',body:JSON.stringify(p)});
+    const r=await api('/api/exits',{method:'POST',body:JSON.stringify(payload())});
     pollJob(r.job_id);
   }catch(e){j.textContent='خطا: '+e.message}
 }
@@ -121,13 +178,16 @@ async function pollJob(id){
     const r=await api('/api/jobs/'+id);
     $('job').innerHTML='<b>'+esc(r.state)+'</b><br>'+r.messages.map(x=>esc(x.text)).join('<br>');
     if(r.state==='done'){
-      $('password').value='';$('privateKey').value='';loadStatus();return;
+      $('password').value='';$('privateKey').value='';refreshAll();return;
     }
     if(r.state==='failed')return;
     setTimeout(()=>pollJob(id),1500);
   }catch(e){$('job').textContent=e.message}
 }
 
+async function refreshAll(){await Promise.all([loadStatus(),loadAgents()])}
+
+$('agentId').addEventListener('change',syncAgentSelection);
 standardPorts();
-loadStatus();
-setInterval(loadStatus,10000);
+refreshAll();
+setInterval(refreshAll,10000);
