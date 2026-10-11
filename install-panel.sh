@@ -1,8 +1,70 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 RAW="${TP27_REPO_RAW:-https://raw.githubusercontent.com/matin111/tp27-core/main}"
+REQUESTED_IP="${1:-}"
+
 [[ "$EUID" -eq 0 ]] || { echo "ERROR: run as root"; exit 1; }
 command -v tp27 >/dev/null || { echo "ERROR: install TP27 core first"; exit 2; }
+
+valid_ip() {
+  python3 - "$1" <<'PY'
+import ipaddress, sys
+try:
+    ipaddress.ip_address(sys.argv[1])
+except Exception:
+    raise SystemExit(1)
+PY
+}
+
+detect_ip() {
+  local ip=""
+  ip="$(python3 - <<'PY' 2>/dev/null || true
+import json
+try:
+    x=json.load(open('/etc/tp27/config.json')).get('public_ip','')
+    print(x if x else '')
+except Exception:
+    print('')
+PY
+)"
+  if [[ -n "$ip" ]] && valid_ip "$ip"; then
+    echo "$ip"
+    return 0
+  fi
+  ip="$(curl -4 -fsS --max-time 5 https://ifconfig.me 2>/dev/null || true)"
+  if [[ -n "$ip" ]] && valid_ip "$ip"; then
+    echo "$ip"
+    return 0
+  fi
+  ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
+  [[ -n "$ip" ]] && valid_ip "$ip" && echo "$ip"
+}
+
+if [[ -n "$REQUESTED_IP" ]]; then
+  valid_ip "$REQUESTED_IP" || { echo "ERROR: invalid IP: $REQUESTED_IP"; exit 3; }
+  IP="$REQUESTED_IP"
+else
+  DETECTED_IP="$(detect_ip || true)"
+  [[ -n "$DETECTED_IP" ]] || { echo "ERROR: could not detect server IP; run: install-panel.sh <IP>"; exit 3; }
+  IP="$DETECTED_IP"
+
+  if [[ -r /dev/tty && -w /dev/tty ]]; then
+    echo
+    echo "Detected server IP: $DETECTED_IP"
+    printf 'Panel IP [%s]: ' "$DETECTED_IP" >/dev/tty
+    INPUT_IP=""
+    IFS= read -r INPUT_IP </dev/tty || true
+    if [[ -n "$INPUT_IP" ]]; then
+      valid_ip "$INPUT_IP" || { echo "ERROR: invalid IP: $INPUT_IP"; exit 3; }
+      IP="$INPUT_IP"
+    fi
+  fi
+fi
+
+echo "============================================================"
+echo " TP27 PANEL INSTALLER"
+echo " PANEL IP: $IP"
+echo "============================================================"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -44,14 +106,11 @@ p.chmod(0o600)
 PY
 fi
 
-IP="$(python3 - <<'PY'
-import json
-try:
-    print(json.load(open('/etc/tp27/config.json')).get('public_ip','127.0.0.1'))
-except Exception:
-    print('127.0.0.1')
-PY
-)"
+printf '%s\n' "$IP" >/etc/tp27/panel-ip
+chmod 600 /etc/tp27/panel-ip
+
+# Always create a local fallback certificate first so panel installation remains usable
+# even if public certificate issuance is temporarily unavailable.
 if [[ ! -f /etc/tp27/panel.key || ! -f /etc/tp27/panel.crt ]]; then
   openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 3650 \
     -subj "/CN=$IP" -addext "subjectAltName=IP:$IP" \
@@ -63,10 +122,28 @@ fi
 systemctl daemon-reload
 systemctl enable --now tp27-panel.service
 
+SSL_STATE="self-signed"
+echo
+echo "===== TRUSTED IP SSL ====="
+SSL_SCRIPT="$(mktemp /tmp/tp27-ip-ssl.XXXXXX.sh)"
+if curl -fsSL "$RAW/enable-ip-ssl.sh" -o "$SSL_SCRIPT"; then
+  chmod 700 "$SSL_SCRIPT"
+  if bash "$SSL_SCRIPT" "$IP"; then
+    SSL_STATE="trusted"
+  else
+    echo "WARNING: trusted IP SSL could not be issued now."
+    echo "Panel remains available with the fallback self-signed certificate."
+  fi
+else
+  echo "WARNING: could not download IP SSL helper."
+fi
+rm -f "$SSL_SCRIPT"
+
 echo
 echo "============================================================"
 echo " TP27 PANEL INSTALLED"
 echo " URL: https://$IP:8787"
+echo " SSL: $SSL_STATE"
 if [[ -n "$NEW_PASSWORD" ]]; then
   echo " USER: admin"
   echo " PASSWORD: $NEW_PASSWORD"
@@ -75,5 +152,16 @@ if [[ -n "$NEW_PASSWORD" ]]; then
   echo " Saved: /root/tp27-panel-credentials.txt"
 else
   echo " Existing panel password preserved."
+  if [[ -f /root/tp27-panel-credentials.txt ]]; then
+    sed -i "s#^URL=.*#URL=https://$IP:8787#" /root/tp27-panel-credentials.txt || true
+  fi
+fi
+
+echo
+echo " Service: $(systemctl is-active tp27-panel.service || true)"
+if [[ "$SSL_STATE" == "trusted" ]]; then
+  echo " Trusted IP certificate and automatic renewal: enabled"
+else
+  echo " Trusted IP certificate: pending/fallback"
 fi
 echo "============================================================"
