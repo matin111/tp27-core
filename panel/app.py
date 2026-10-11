@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from auth import make_session, session_ok, verify_password
 from provision import CORE_CONFIG, JOBS, load_json, preflight, provision, run, validate_id
+from provision_password import preflight_password, provision_password
 from ports import add_custom, apply_profile, set_l2tp, state as port_state
 from portplan import validate_plan
 
@@ -124,13 +125,22 @@ async def status(request: Request):
             'active_l2tp_exit': pstate.get('active_l2tp_exit')}
 
 
+async def do_preflight(body: SSHProbe):
+    if body.password and not body.private_key:
+        return await preflight_password(body.host, body.port, body.username, body.password)
+    return await preflight(body.host, body.port, body.username,
+                           body.password, body.private_key)
+
+
 @app.post('/api/preflight')
 async def ssh_preflight(request: Request, body: SSHProbe):
     guard(request)
     try:
         ipaddress.ip_address(body.host)
-        return await preflight(body.host, body.port, body.username,
-                               body.password, body.private_key)
+        result = await do_preflight(body)
+        if result.get('ok'):
+            return result
+        return JSONResponse(result, status_code=400)
     except Exception as exc:
         return JSONResponse({'ok': False, 'error': str(exc)}, status_code=400)
 
@@ -149,16 +159,25 @@ async def add_exit(request: Request, body: ExitCreate):
     if not body.password and not body.private_key:
         raise HTTPException(status_code=400, detail='رمز یا کلید SSH لازم است')
 
-    probe = await preflight(body.host, body.port, body.username,
-                            body.password, body.private_key)
+    probe = await do_preflight(body)
     if not probe.get('ok'):
         raise HTTPException(status_code=400, detail=probe.get('error') or 'اتصال SSH ناموفق است')
 
     job_id = secrets.token_hex(8)
     JOBS[job_id] = {'id': job_id, 'state': 'queued', 'messages': []}
-    asyncio.create_task(provision(job_id, body.host, body.port, body.username,
-                                  body.password, body.private_key, body.id,
-                                  body.tunnel_port, body.mtu, mapping_plan))
+
+    if body.password and not body.private_key:
+        asyncio.create_task(provision_password(
+            job_id, body.host, body.port, body.username,
+            body.password, body.id, body.tunnel_port,
+            body.mtu, mapping_plan,
+        ))
+    else:
+        asyncio.create_task(provision(
+            job_id, body.host, body.port, body.username,
+            body.password, body.private_key, body.id,
+            body.tunnel_port, body.mtu, mapping_plan,
+        ))
     return {'job_id': job_id}
 
 
