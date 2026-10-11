@@ -13,19 +13,60 @@ MTU="$(jq -r '.mtu // 1280' "$CFG")"
 [[ -n "$IFACE" && "$IFACE" != "null" ]] || { echo "invalid interface" >&2; exit 2; }
 [[ -n "$ADDR" && "$ADDR" != "null" ]] || { echo "invalid tunnel_ip" >&2; exit 2; }
 
+IPT="$(command -v iptables || true)"
+
+ensure_chain_hook() {
+  local table="$1" parent="$2" chain="$3"
+  [[ -n "$IPT" ]] || return 0
+  "$IPT" -w 5 -t "$table" -N "$chain" 2>/dev/null || true
+  "$IPT" -w 5 -t "$table" -C "$parent" -j "$chain" 2>/dev/null || \
+    "$IPT" -w 5 -t "$table" -I "$parent" 1 -j "$chain"
+}
+
+ensure_rule() {
+  local table="$1" chain="$2"; shift 2
+  [[ -n "$IPT" ]] || return 0
+  "$IPT" -w 5 -t "$table" -C "$chain" "$@" 2>/dev/null || \
+    "$IPT" -w 5 -t "$table" -A "$chain" "$@"
+}
+
+remove_rule() {
+  local table="$1" chain="$2"; shift 2
+  [[ -n "$IPT" ]] || return 0
+  while "$IPT" -w 5 -t "$table" -C "$chain" "$@" 2>/dev/null; do
+    "$IPT" -w 5 -t "$table" -D "$chain" "$@" 2>/dev/null || break
+  done
+}
+
+setup_tun_firewall() {
+  [[ -n "$IPT" ]] || return 0
+  # Dedicated TP27 chains only. Never flush or rewrite global firewall rules.
+  ensure_chain_hook filter INPUT TP27_TUN_IN
+  ensure_chain_hook filter FORWARD TP27_TUN_FWD
+  ensure_rule filter TP27_TUN_IN -i "$IFACE" -j ACCEPT
+  ensure_rule filter TP27_TUN_FWD -i "$IFACE" -j ACCEPT
+  ensure_rule filter TP27_TUN_FWD -o "$IFACE" -j ACCEPT
+}
+
+cleanup_tun_firewall() {
+  remove_rule filter TP27_TUN_IN -i "$IFACE" -j ACCEPT
+  remove_rule filter TP27_TUN_FWD -i "$IFACE" -j ACCEPT
+  remove_rule filter TP27_TUN_FWD -o "$IFACE" -j ACCEPT
+}
+
 ip link del "$IFACE" 2>/dev/null || true
 
 cleanup(){
   local rc=$?
   [[ -n "${SOCAT_PID:-}" ]] && kill "$SOCAT_PID" 2>/dev/null || true
+  cleanup_tun_firewall || true
   ip link del "$IFACE" 2>/dev/null || true
   exit "$rc"
 }
 trap cleanup EXIT INT TERM
 
-# Do not rely on socat to configure the L3 address/netmask.  Different socat
-# builds handle TUN:<address/prefix> inconsistently.  TP27 creates a bare TUN
-# device and configures its IPv4 address explicitly after the fd exists.
+# Create a bare TUN fd. TP27 configures IPv4/MTU explicitly because socat
+# versions differ in how they interpret TUN:<address/prefix>.
 TUN_SPEC="TUN,tun-name=${IFACE},tun-type=tun,iff-no-pi"
 
 case "$ROLE" in
@@ -82,8 +123,11 @@ READY=0
 for _ in $(seq 1 80); do
   if ip link show "$IFACE" >/dev/null 2>&1; then
     ip link set dev "$IFACE" mtu "$MTU"
-    ip addr replace "$ADDR" dev "$IFACE"
+    ip addr flush dev "$IFACE" scope global 2>/dev/null || true
+    ip addr add "$ADDR" dev "$IFACE"
     ip link set dev "$IFACE" up
+    sysctl -q -w "net.ipv4.conf.${IFACE}.rp_filter=0" 2>/dev/null || true
+    setup_tun_firewall
     READY=1
     break
   fi
@@ -98,14 +142,18 @@ if [[ "$READY" -ne 1 ]]; then
   wait "$SOCAT_PID"
 fi
 
-# Verify the exact L3 address is present before accepting the service as ready.
 if ! ip -4 addr show dev "$IFACE" | grep -Fq "inet ${ADDR} "; then
   echo "failed to configure ${ADDR} on ${IFACE}" >&2
+  ip -4 addr show dev "$IFACE" >&2 || true
   exit 3
 fi
 
-# The connected route for the /30 is installed automatically by `ip addr`.
-# Keep per-link rp_filter disabled so asymmetric service flows are not dropped.
-sysctl -q -w "net.ipv4.conf.${IFACE}.rp_filter=0" 2>/dev/null || true
+echo "TP27_L3_READY role=$ROLE iface=$IFACE addr=$ADDR mtu=$MTU" >&2
+ip -br -4 addr show dev "$IFACE" >&2 || true
+ip -4 route show dev "$IFACE" >&2 || true
+if [[ -n "$IPT" ]]; then
+  "$IPT" -w 5 -S TP27_TUN_IN 2>/dev/null | grep -F -- "-i $IFACE" >&2 || true
+  "$IPT" -w 5 -S TP27_TUN_FWD 2>/dev/null | grep -F -- "$IFACE" >&2 || true
+fi
 
 wait "$SOCAT_PID"
