@@ -145,8 +145,15 @@ async def add_exit(request: Request, body: ExitCreate):
         mapping_plan = validate_plan([m.model_dump() for m in body.mappings])
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
     if not body.password and not body.private_key:
         raise HTTPException(status_code=400, detail='رمز یا کلید SSH لازم است')
+
+    probe = await preflight(body.host, body.port, body.username,
+                            body.password, body.private_key)
+    if not probe.get('ok'):
+        raise HTTPException(status_code=400, detail=probe.get('error') or 'اتصال SSH ناموفق است')
+
     job_id = secrets.token_hex(8)
     JOBS[job_id] = {'id': job_id, 'state': 'queued', 'messages': []}
     asyncio.create_task(provision(job_id, body.host, body.port, body.username,
