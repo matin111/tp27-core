@@ -14,7 +14,7 @@ from pathlib import Path
 
 import requests
 
-VERSION = '1.2.0'
+VERSION = '1.2.1'
 RAW = os.environ.get('TP27_REPO_RAW', 'https://raw.githubusercontent.com/matin111/tp27-core/main')
 ROOT = Path('/etc/tp27')
 CONFIG = ROOT / 'exit-agent.json'
@@ -53,6 +53,24 @@ def run(cmd, timeout=120, check=True):
     if check and p.returncode != 0:
         raise RuntimeError((p.stderr or p.stdout or 'command failed').strip())
     return p.returncode, (p.stdout or '').strip(), (p.stderr or '').strip()
+
+
+def _download(url, path, mode):
+    r = requests.get(url, timeout=30)
+    r.raise_for_status()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + '.new')
+    tmp.write_bytes(r.content)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def refresh_data_plane():
+    # Fixed, allowlisted source only. This keeps the Exit link implementation
+    # synchronized with the Controller before every reverse provisioning.
+    _download(RAW + '/bin/tp27-link-mtls', LINK_BIN, 0o755)
+    _download(RAW + '/systemd/tp27-link@.service', LINK_UNIT, 0o644)
+    run(['systemctl', 'daemon-reload'], timeout=20)
 
 
 def machine_agent_id():
@@ -149,7 +167,6 @@ def action_status(_args):
 
 
 def action_provision_exit(args):
-    # Legacy Iran->Exit listener mode, kept for backward compatibility.
     eid = safe_id(str(args.get('id', '')))
     listen_port = int(args.get('listen_port'))
     if not 1 <= listen_port <= 65535:
@@ -191,8 +208,6 @@ def action_provision_exit(args):
 
 
 def action_provision_reverse_exit(args):
-    # Preferred mode for Iran routes: the Exit initiates the TLS connection to
-    # the Iran listener. All peer material is controller-generated and pinned.
     eid = safe_id(str(args.get('id', '')))
     iran_endpoint = str(args.get('iran_endpoint', '')).strip()
     ipaddress.ip_address(iran_endpoint)
@@ -204,6 +219,9 @@ def action_provision_reverse_exit(args):
     mtu = int(args.get('mtu', 1280))
     if not 1000 <= mtu <= 1500:
         raise ValueError('invalid mtu')
+
+    # Always sync the current data-plane implementation before provisioning.
+    refresh_data_plane()
 
     ca_pem = _pem(args.get('ca_pem'), 'CERTIFICATE')
     cert_pem = _pem(args.get('client_cert_pem'), 'CERTIFICATE')
@@ -232,12 +250,13 @@ def action_provision_reverse_exit(args):
         'key': str(key_path),
     }
     atomic_json(EXITS / (eid + '.json'), cfg)
-    run(['systemctl', 'daemon-reload'], timeout=20)
     rc, out, err = run(['systemctl', 'enable', '--now', 'tp27-link@' + eid + '.service'], timeout=30, check=False)
     if rc != 0:
         raise RuntimeError(err or out or 'reverse exit link start failed')
     time.sleep(1)
     active = subprocess.run(['systemctl', 'is-active', '--quiet', 'tp27-link@' + eid + '.service']).returncode == 0
+    _, addr_out, _ = run(['ip', '-br', '-4', 'addr', 'show', 'dev', iface], timeout=10, check=False)
+    _, route_out, _ = run(['ip', '-4', 'route', 'show', 'dev', iface], timeout=10, check=False)
     return {
         'id': eid,
         'mode': 'reverse',
@@ -245,6 +264,9 @@ def action_provision_reverse_exit(args):
         'listen_port': listen_port,
         'tunnel_ip': tunnel_ip,
         'service_active': active,
+        'interface_state': addr_out,
+        'route_state': route_out,
+        'agent_version': VERSION,
     }
 
 
@@ -287,24 +309,11 @@ def action_delete_exit(args):
     return {'id': eid, 'deleted': True, 'removed': removed}
 
 
-def _download(url, path, mode):
-    r = requests.get(url, timeout=30)
-    r.raise_for_status()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + '.new')
-    tmp.write_bytes(r.content)
-    os.chmod(tmp, mode)
-    os.replace(tmp, path)
-
-
 def action_upgrade_agent(_args):
-    # Fixed-source, allowlisted upgrade. No arbitrary URL or shell is accepted.
     _download(RAW + '/agent/tp27-exit-agent.py', AGENT_FILE, 0o700)
-    _download(RAW + '/bin/tp27-link-mtls', LINK_BIN, 0o755)
-    _download(RAW + '/systemd/tp27-link@.service', LINK_UNIT, 0o644)
+    refresh_data_plane()
     _download(RAW + '/systemd/tp27-exit-agent.service', AGENT_UNIT, 0o644)
     run(['systemctl', 'daemon-reload'], timeout=20)
-    # Restart after the result has had time to reach the controller.
     run([
         'systemd-run', '--unit=tp27-agent-delayed-restart', '--on-active=5s',
         '/bin/systemctl', 'restart', 'tp27-exit-agent.service'
