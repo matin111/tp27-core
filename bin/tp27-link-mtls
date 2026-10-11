@@ -13,6 +13,19 @@ MTU="$(jq -r '.mtu // 1280' "$CFG")"
 [[ -n "$IFACE" && "$IFACE" != "null" ]] || { echo "invalid interface" >&2; exit 2; }
 [[ -n "$ADDR" && "$ADDR" != "null" ]] || { echo "invalid tunnel_ip" >&2; exit 2; }
 
+# TP27 currently allocates /30 pairs. For a TUN interface, configure the two
+# usable hosts explicitly as point-to-point peers instead of treating the link
+# as an Ethernet-like connected subnet.
+read -r LOCAL_IP PEER_IP PREFIX <<<"$(python3 - "$ADDR" <<'PY'
+import ipaddress, sys
+iface = ipaddress.ip_interface(sys.argv[1])
+hosts = list(iface.network.hosts())
+peers = [str(x) for x in hosts if x != iface.ip]
+peer = peers[0] if len(peers) == 1 else ''
+print(str(iface.ip), peer, iface.network.prefixlen)
+PY
+)"
+
 IPT="$(command -v iptables || true)"
 
 ensure_chain_hook() {
@@ -42,14 +55,17 @@ setup_tun_firewall() {
   [[ -n "$IPT" ]] || return 0
   # Dedicated TP27 chains only. Never flush or rewrite global firewall rules.
   ensure_chain_hook filter INPUT TP27_TUN_IN
+  ensure_chain_hook filter OUTPUT TP27_TUN_OUT
   ensure_chain_hook filter FORWARD TP27_TUN_FWD
   ensure_rule filter TP27_TUN_IN -i "$IFACE" -j ACCEPT
+  ensure_rule filter TP27_TUN_OUT -o "$IFACE" -j ACCEPT
   ensure_rule filter TP27_TUN_FWD -i "$IFACE" -j ACCEPT
   ensure_rule filter TP27_TUN_FWD -o "$IFACE" -j ACCEPT
 }
 
 cleanup_tun_firewall() {
   remove_rule filter TP27_TUN_IN -i "$IFACE" -j ACCEPT
+  remove_rule filter TP27_TUN_OUT -o "$IFACE" -j ACCEPT
   remove_rule filter TP27_TUN_FWD -i "$IFACE" -j ACCEPT
   remove_rule filter TP27_TUN_FWD -o "$IFACE" -j ACCEPT
 }
@@ -124,7 +140,14 @@ for _ in $(seq 1 80); do
   if ip link show "$IFACE" >/dev/null 2>&1; then
     ip link set dev "$IFACE" mtu "$MTU"
     ip addr flush dev "$IFACE" scope global 2>/dev/null || true
-    ip addr add "$ADDR" dev "$IFACE"
+
+    if [[ "$PREFIX" == "30" && -n "$PEER_IP" ]]; then
+      ip addr add "${LOCAL_IP}/32" peer "${PEER_IP}/32" dev "$IFACE"
+      ip route replace "${PEER_IP}/32" dev "$IFACE" src "$LOCAL_IP"
+    else
+      ip addr add "$ADDR" dev "$IFACE"
+    fi
+
     ip link set dev "$IFACE" up
     sysctl -q -w "net.ipv4.conf.${IFACE}.rp_filter=0" 2>/dev/null || true
     setup_tun_firewall
@@ -142,17 +165,18 @@ if [[ "$READY" -ne 1 ]]; then
   wait "$SOCAT_PID"
 fi
 
-if ! ip -4 addr show dev "$IFACE" | grep -Fq "inet ${ADDR} "; then
+if ! ip -4 addr show dev "$IFACE" | grep -Fq "inet ${LOCAL_IP}"; then
   echo "failed to configure ${ADDR} on ${IFACE}" >&2
   ip -4 addr show dev "$IFACE" >&2 || true
   exit 3
 fi
 
-echo "TP27_L3_READY role=$ROLE iface=$IFACE addr=$ADDR mtu=$MTU" >&2
+echo "TP27_L3_READY role=$ROLE iface=$IFACE local=$LOCAL_IP peer=${PEER_IP:-none} mtu=$MTU" >&2
 ip -br -4 addr show dev "$IFACE" >&2 || true
 ip -4 route show dev "$IFACE" >&2 || true
 if [[ -n "$IPT" ]]; then
   "$IPT" -w 5 -S TP27_TUN_IN 2>/dev/null | grep -F -- "-i $IFACE" >&2 || true
+  "$IPT" -w 5 -S TP27_TUN_OUT 2>/dev/null | grep -F -- "-o $IFACE" >&2 || true
   "$IPT" -w 5 -S TP27_TUN_FWD 2>/dev/null | grep -F -- "$IFACE" >&2 || true
 fi
 
