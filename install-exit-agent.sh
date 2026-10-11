@@ -25,59 +25,37 @@ probe_controller() {
   local base="$1"
   local extra=()
   [[ "$MODE" == "--insecure" ]] && extra+=(--insecure)
-  curl "${extra[@]}" -fsS --connect-timeout 5 --max-time 10 \
+  curl "${extra[@]}" -fsS --connect-timeout 4 --max-time 7 \
     "$base/api/control-key" >/dev/null 2>&1
 }
 
-select_controller() {
-  local requested="$1"
-  local host standard
-  host="$(python3 - "$requested" <<'PY'
+# Connectivity probing is diagnostic only. Do not block installation here:
+# some providers intermittently drop the probe while the enrollment request
+# itself still succeeds a few seconds later. Preserve the URL issued by the
+# controller unless a verified standard-HTTPS endpoint is actually reachable.
+REQUESTED_CONTROLLER="$CONTROLLER"
+HOST="$(python3 - "$CONTROLLER" <<'PY'
 from urllib.parse import urlsplit
 import sys
 u=urlsplit(sys.argv[1])
 print(u.hostname or '')
 PY
 )"
-  [[ -n "$host" ]] || return 1
-  standard="https://$host"
+STANDARD=""
+[[ -n "$HOST" ]] && STANDARD="https://$HOST"
 
-  echo "===== CONTROLLER CONNECTIVITY ====="
-  echo "Trying: $requested"
-  if probe_controller "$requested"; then
-    echo "Controller reachable: $requested"
-    printf '%s\n' "$requested"
-    return 0
-  fi
-
-  if [[ "$standard" != "$requested" ]]; then
-    echo "Direct endpoint failed; trying standard HTTPS: $standard"
-    if probe_controller "$standard"; then
-      echo "Controller reachable: $standard"
-      printf '%s\n' "$standard"
-      return 0
-    fi
-  fi
-
-  return 1
-}
-
-SELECTED="$(select_controller "$CONTROLLER" | tail -n 1 || true)"
-if [[ -z "$SELECTED" || "$SELECTED" != https://* ]]; then
-  echo "ERROR: controller is not reachable from this exit server."
-  echo "Tried: $CONTROLLER"
-  HOST="$(python3 - "$CONTROLLER" <<'PY'
-from urllib.parse import urlsplit
-import sys
-u=urlsplit(sys.argv[1])
-print(u.hostname or '')
-PY
-)"
-  [[ -n "$HOST" ]] && echo "Also tried: https://$HOST"
-  echo "This is a network path / firewall / provider reachability problem between the exit server and the Iran controller."
-  exit 6
+echo "===== CONTROLLER CONNECTIVITY (NON-BLOCKING) ====="
+if probe_controller "$REQUESTED_CONTROLLER"; then
+  echo "Controller probe OK: $REQUESTED_CONTROLLER"
+elif [[ -n "$STANDARD" && "$STANDARD" != "$REQUESTED_CONTROLLER" ]] && probe_controller "$STANDARD"; then
+  echo "Requested endpoint probe failed: $REQUESTED_CONTROLLER"
+  echo "Verified standard HTTPS endpoint: $STANDARD"
+  CONTROLLER="$STANDARD"
+else
+  echo "WARNING: controller probe did not answer right now."
+  echo "Installation will continue and enrollment will try: $REQUESTED_CONTROLLER"
+  CONTROLLER="$REQUESTED_CONTROLLER"
 fi
-CONTROLLER="$SELECTED"
 
 echo "Selected controller: $CONTROLLER"
 
