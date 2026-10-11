@@ -61,7 +61,7 @@ echo "============================================================"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y python3-venv openssl curl ca-certificates iptables
+apt-get install -y python3-venv openssl curl ca-certificates iptables openssh-client sshpass
 
 install -d -m 755 /opt/tp27-panel /opt/tp27-panel/static
 install -d -m 700 /etc/tp27 /var/log/tp27/panel-jobs
@@ -70,7 +70,7 @@ python3 -m venv /opt/tp27-panel/venv
 curl -fsSL "$RAW/panel/requirements.txt" -o /opt/tp27-panel/requirements.txt
 /opt/tp27-panel/venv/bin/pip install -r /opt/tp27-panel/requirements.txt
 
-for f in app.py auth.py provision.py ports.py portplan.py; do
+for f in app.py auth.py provision.py provision_password.py ports.py portplan.py; do
   curl -fsSL "$RAW/panel/$f" -o "/opt/tp27-panel/$f"
 done
 for f in index.html login.html style.css app.js; do
@@ -112,7 +112,8 @@ if [[ ! -f /etc/tp27/panel.key || ! -f /etc/tp27/panel.crt ]]; then
 fi
 
 systemctl daemon-reload
-systemctl enable --now tp27-panel.service
+systemctl enable tp27-panel.service >/dev/null 2>&1 || true
+systemctl restart tp27-panel.service
 systemctl enable tp27-ports-reconcile.service >/dev/null 2>&1 || true
 systemctl restart tp27-ports-reconcile.service || true
 
@@ -154,6 +155,7 @@ fi
 echo
 echo " Service: $(systemctl is-active tp27-panel.service || true)"
 echo " Port reconcile: $(systemctl is-active tp27-ports-reconcile.service || true)"
+echo " SSH backend: OpenSSH + sshpass for password authentication"
 if [[ "$SSL_STATE" == "trusted" ]]; then
   echo " Trusted IP certificate and automatic renewal: enabled"
 else
