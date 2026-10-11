@@ -75,13 +75,13 @@ setup_gre_underlay_firewall() {
   ensure_chain_hook filter INPUT TP27_GRE_IN
   ensure_chain_hook filter OUTPUT TP27_GRE_OUT
   ensure_rule filter TP27_GRE_IN -p 47 -s "$GRE_REMOTE_PUBLIC/32" -d "$GRE_LOCAL_PUBLIC/32" -j ACCEPT
-  ensure_rule filter TP27_GRE_OUT -p 47 -s "$GRE_LOCAL_PUBLIC/32" -d "$GRE_REMOTE_PUBLIC/32" -j ACCEPT
+  ensure_rule filter TP27_GRE_OUT -p 47 -s "$GRE_LOCAL_PUBLIC_PUBLIC/32" -d "$GRE_REMOTE_PUBLIC/32" -j ACCEPT
 }
 
 cleanup_gre_underlay_firewall() {
   [[ -n "$IPT" && -n "$GRE_LOCAL_PUBLIC" && -n "$GRE_REMOTE_PUBLIC" ]] || return 0
   remove_rule filter TP27_GRE_IN -p 47 -s "$GRE_REMOTE_PUBLIC/32" -d "$GRE_LOCAL_PUBLIC/32" -j ACCEPT
-  remove_rule filter TP27_GRE_OUT -p 47 -s "$GRE_LOCAL_PUBLIC/32" -d "$GRE_REMOTE_PUBLIC/32" -j ACCEPT
+  remove_rule filter TP27_GRE_OUT -p 47 -s "$GRE_LOCAL_PUBLIC_PUBLIC/32" -d "$GRE_REMOTE_PUBLIC/32" -j ACCEPT
 }
 
 ip link del "$IFACE" 2>/dev/null || true
@@ -147,6 +147,11 @@ PY
   while true; do
     sleep "$KEEPALIVE_INTERVAL"
 
+    if ! ip link show "$IFACE" >/dev/null 2>&1; then
+      echo "TP27_GRE_SELFHEAL iface=$IFACE reason=interface-missing action=restart" >&2
+      exit 75
+    fi
+
     RX_NOW="$(cat "/sys/class/net/${IFACE}/statistics/rx_bytes" 2>/dev/null || echo 0)"
     PING_OK=0
     if [[ -n "${PEER_IP:-}" ]] && ping -I "$IFACE" -c 2 -i 0.2 -W 1 "$PEER_IP" >/dev/null 2>&1; then
@@ -160,10 +165,12 @@ PY
       FAIL_COUNT=0
     else
       FAIL_COUNT=$((FAIL_COUNT + 1))
-      echo "TP27_GRE_KEEPALIVE_FAIL iface=$IFACE peer=${PEER_IP:-none} failure=$FAIL_COUNT/$KEEPALIVE_FAILURES rx=$RX_NOW" >&2
-      if [[ "$FAIL_COUNT" -ge "$KEEPALIVE_FAILURES" ]]; then
-        echo "TP27_GRE_SELFHEAL iface=$IFACE reason=peer-unreachable action=restart" >&2
-        exit 75
+      if [[ "$FAIL_COUNT" -lt "$KEEPALIVE_FAILURES" ]]; then
+        echo "TP27_GRE_KEEPALIVE_FAIL iface=$IFACE peer=${PEER_IP:-none} failure=$FAIL_COUNT/$KEEPALIVE_FAILURES rx=$RX_NOW" >&2
+      elif [[ "$FAIL_COUNT" -eq "$KEEPALIVE_FAILURES" ]]; then
+        echo "TP27_GRE_DEGRADED iface=$IFACE peer=${PEER_IP:-none} failures=$FAIL_COUNT action=hold-interface" >&2
+      else
+        FAIL_COUNT="$KEEPALIVE_FAILURES"
       fi
     fi
 
