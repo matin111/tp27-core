@@ -357,7 +357,10 @@ async def api_agent_manage(request: Request, agent_id: str):
 async def api_agent_command(request: Request, agent_id: str, body: CommandBody):
     _admin_guard(request)
     try:
-        return queue_command(agent_id, body.action, body.args)
+        item = queue_command(agent_id, body.action, body.args)
+        # Keep the full command record for compatibility while also returning
+        # the explicit field the browser uses for polling.
+        return {**item, 'command_id': item['id']}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
