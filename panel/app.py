@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from auth import make_session, session_ok, verify_password
 from provision import CORE_CONFIG, JOBS, load_json, preflight, provision, run, validate_id
+from ports import add_custom, apply_profile, set_l2tp, state as port_state
 
 BASE = Path(__file__).resolve().parent
 app = FastAPI(title='TP27 Control Panel', docs_url=None, redoc_url=None)
@@ -43,6 +44,25 @@ class ExitCreate(SSHProbe):
     id: Optional[str] = None
     tunnel_port: Optional[int] = Field(default=None, ge=1, le=65535)
     mtu: int = Field(default=1280, ge=1000, le=1500)
+
+
+class ServiceProfile(BaseModel):
+    exit_id: str
+    cisco_port: int = Field(default=8897, ge=1, le=65535)
+    openvpn_port: int = Field(default=9988, ge=1, le=65535)
+    wireguard_port: int = Field(default=55821, ge=1, le=65535)
+
+
+class CustomMapping(BaseModel):
+    exit_id: str
+    service: str = Field(min_length=1, max_length=24)
+    proto: str
+    listen_port: int = Field(ge=1, le=65535)
+    target_port: int = Field(ge=1, le=65535)
+
+
+class L2TPActive(BaseModel):
+    exit_id: Optional[str] = None
 
 
 @app.get('/login', response_class=HTMLResponse)
@@ -77,6 +97,7 @@ async def home(request: Request):
 async def status(request: Request):
     guard(request)
     cfg = load_json(CORE_CONFIG)
+    pstate = port_state()
     rows = []
     for item in cfg.get('exits', []):
         eid = item.get('id', '')
@@ -85,9 +106,13 @@ async def status(request: Request):
         ping_rc = 1
         if iface and item.get('remote_ip'):
             ping_rc, _, _ = run(['ping','-I',iface,'-c','1','-W','1',item['remote_ip']], check=False)
-        rows.append({**item, 'healthy': svc_rc == 0 and ping_rc == 0})
+        mappings = [m for m in pstate.get('mappings', []) if m.get('exit_id') == eid]
+        rows.append({**item, 'healthy': svc_rc == 0 and ping_rc == 0,
+                     'mappings': mappings,
+                     'l2tp_active': pstate.get('active_l2tp_exit') == eid})
     return {'version': cfg.get('version'), 'role': cfg.get('role'),
-            'public_ip': cfg.get('public_ip'), 'exits': rows}
+            'public_ip': cfg.get('public_ip'), 'exits': rows,
+            'active_l2tp_exit': pstate.get('active_l2tp_exit')}
 
 
 @app.post('/api/preflight')
@@ -118,6 +143,45 @@ async def add_exit(request: Request, body: ExitCreate):
                                   body.password, body.private_key, body.id,
                                   body.tunnel_port, body.mtu))
     return {'job_id': job_id}
+
+
+@app.get('/api/ports')
+async def ports(request: Request):
+    guard(request)
+    return port_state()
+
+
+@app.post('/api/ports/profile')
+async def create_profile(request: Request, body: ServiceProfile):
+    guard(request)
+    try:
+        return {'ok': True, 'mappings': apply_profile(body.exit_id, body.cisco_port,
+                                                      body.openvpn_port, body.wireguard_port)}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post('/api/ports/custom')
+async def create_custom_mapping(request: Request, body: CustomMapping):
+    guard(request)
+    try:
+        proto = body.proto.lower().strip()
+        if proto not in {'tcp', 'udp'}:
+            raise ValueError('پروتکل باید tcp یا udp باشد')
+        item = add_custom(body.exit_id, body.service, proto,
+                          body.listen_port, body.target_port)
+        return {'ok': True, 'mapping': item}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post('/api/l2tp/active')
+async def l2tp_active(request: Request, body: L2TPActive):
+    guard(request)
+    try:
+        return {'ok': True, 'active_l2tp_exit': set_l2tp(body.exit_id)}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get('/api/jobs/{job_id}')
