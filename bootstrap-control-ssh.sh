@@ -15,17 +15,28 @@ if not 1 <= p <= 65535:
     raise SystemExit('invalid port')
 PY
 
+# Guard: this bootstrap belongs on the FOREIGN/EXIT server only.
+CURRENT_IP="$(curl -4 -fsS --max-time 5 https://ifconfig.me 2>/dev/null || true)"
+if [[ -z "$CURRENT_IP" ]]; then
+  CURRENT_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
+fi
+if [[ "$CURRENT_IP" == "$IRAN_IP" ]]; then
+  echo "ERROR: this script must run on the FOREIGN/EXIT server, not on Iran ($IRAN_IP)."
+  exit 5
+fi
+
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y openssh-server iptables
+apt-get install -y openssh-server iptables curl
 
 TS="$(date +%Y%m%d-%H%M%S)"
 BACKUP="/root/tp27-control-ssh-backup-$TS"
 install -d -m 700 "$BACKUP"
 iptables-save >"$BACKUP/iptables-save.txt"
 cp -a /etc/ssh/sshd_config "$BACKUP/sshd_config"
-[[ -f /etc/systemd/system/tp27-control-sshd.service ]] && \
-  cp -a /etc/systemd/system/tp27-control-sshd.service "$BACKUP/" || true
+[[ -f /etc/ssh/tp27_control_sshd_config ]] && cp -a /etc/ssh/tp27_control_sshd_config "$BACKUP/" || true
+[[ -f /etc/systemd/system/tp27-control-sshd.service ]] && cp -a /etc/systemd/system/tp27-control-sshd.service "$BACKUP/" || true
+[[ -f /etc/systemd/system/tp27-control-firewall.service ]] && cp -a /etc/systemd/system/tp27-control-firewall.service "$BACKUP/" || true
 
 install -d -m 755 /usr/local/lib/tp27
 
@@ -36,14 +47,43 @@ IRAN_IP='$IRAN_IP'
 PORT='$CONTROL_PORT'
 CHAIN='TP27_SSH_IN'
 
-iptables -N \"\$CHAIN\" 2>/dev/null || true
-iptables -F \"\$CHAIN\"
-iptables -A \"\$CHAIN\" -p tcp -s \"\$IRAN_IP\" --dport \"\$PORT\" -j ACCEPT
-iptables -A \"\$CHAIN\" -p tcp --dport \"\$PORT\" -j DROP
-iptables -C INPUT -p tcp --dport \"\$PORT\" -j \"\$CHAIN\" 2>/dev/null || \
-  iptables -I INPUT 1 -p tcp --dport \"\$PORT\" -j \"\$CHAIN\"
+iptables -N "$CHAIN" 2>/dev/null || true
+iptables -F "$CHAIN"
+iptables -A "$CHAIN" -p tcp -s "$IRAN_IP" --dport "$PORT" -j ACCEPT
+iptables -A "$CHAIN" -p tcp --dport "$PORT" -j DROP
+iptables -C INPUT -p tcp --dport "$PORT" -j "$CHAIN" 2>/dev/null || \
+  iptables -I INPUT 1 -p tcp --dport "$PORT" -j "$CHAIN"
 EOF
 chmod 700 /usr/local/lib/tp27/control-firewall.sh
+
+cat >/etc/ssh/tp27_control_sshd_config <<EOF
+Port $CONTROL_PORT
+Protocol 2
+ListenAddress 0.0.0.0
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_rsa_key
+PidFile /run/tp27-sshd/sshd.pid
+PermitRootLogin yes
+PasswordAuthentication yes
+PubkeyAuthentication yes
+KbdInteractiveAuthentication no
+UsePAM yes
+GSSAPIAuthentication no
+X11Forwarding no
+AllowTcpForwarding no
+PermitTunnel no
+GatewayPorts no
+LoginGraceTime 30
+MaxAuthTries 4
+MaxSessions 4
+MaxStartups 50:30:200
+ClientAliveInterval 30
+ClientAliveCountMax 3
+Subsystem sftp internal-sftp
+EOF
+chmod 600 /etc/ssh/tp27_control_sshd_config
+
+/usr/sbin/sshd -t -f /etc/ssh/tp27_control_sshd_config
 
 cat >/etc/systemd/system/tp27-control-firewall.service <<'EOF'
 [Unit]
@@ -60,7 +100,7 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF
 
-cat >/etc/systemd/system/tp27-control-sshd.service <<EOF
+cat >/etc/systemd/system/tp27-control-sshd.service <<'EOF'
 [Unit]
 Description=TP27 isolated SSH control service
 After=network-online.target tp27-control-firewall.service
@@ -71,8 +111,8 @@ Requires=tp27-control-firewall.service
 Type=simple
 RuntimeDirectory=tp27-sshd
 RuntimeDirectoryMode=0755
-ExecStartPre=/usr/sbin/sshd -t -f /etc/ssh/sshd_config
-ExecStart=/usr/sbin/sshd -D -e -f /etc/ssh/sshd_config -p $CONTROL_PORT -o PidFile=/run/tp27-sshd/sshd.pid -o PermitRootLogin=yes -o PasswordAuthentication=yes -o KbdInteractiveAuthentication=no -o PubkeyAuthentication=yes -o GSSAPIAuthentication=no -o MaxStartups=50:30:200 -o LoginGraceTime=30
+ExecStartPre=/usr/sbin/sshd -t -f /etc/ssh/tp27_control_sshd_config
+ExecStart=/usr/sbin/sshd -D -e -f /etc/ssh/tp27_control_sshd_config
 Restart=always
 RestartSec=2
 
@@ -81,24 +121,35 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now tp27-control-firewall.service
-systemctl enable --now tp27-control-sshd.service
+systemctl enable tp27-control-firewall.service >/dev/null
+systemctl restart tp27-control-firewall.service
+systemctl enable tp27-control-sshd.service >/dev/null
+systemctl restart tp27-control-sshd.service
 sleep 1
+
+if ! systemctl is-active --quiet tp27-control-firewall.service; then
+  echo "ERROR: TP27 control firewall failed"
+  systemctl status tp27-control-firewall.service --no-pager -l || true
+  journalctl -u tp27-control-firewall.service -n 50 --no-pager || true
+  exit 3
+fi
 
 if ! systemctl is-active --quiet tp27-control-sshd.service; then
   echo "ERROR: TP27 control sshd failed"
   systemctl status tp27-control-sshd.service --no-pager -l || true
-  exit 3
+  journalctl -u tp27-control-sshd.service -n 50 --no-pager || true
+  exit 4
 fi
 
 if ! ss -lntp | grep -q ":${CONTROL_PORT} "; then
   echo "ERROR: control port is not listening: $CONTROL_PORT"
   ss -lntp | grep sshd || true
-  exit 4
+  exit 6
 fi
 
 echo "============================================================"
 echo " TP27 CONTROL SSH READY"
+echo " EXIT IP: ${CURRENT_IP:-unknown}"
 echo " IRAN IP: $IRAN_IP"
 echo " PORT: $CONTROL_PORT"
 echo " ORIGINAL SSH PORT 22: UNCHANGED"
