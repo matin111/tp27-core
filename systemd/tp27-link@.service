@@ -1,5 +1,5 @@
 [Unit]
-Description=TP27 L3 TLS Tunnel (%i)
+Description=TP27 Data Plane (%i)
 After=network-online.target
 Wants=network-online.target
 
