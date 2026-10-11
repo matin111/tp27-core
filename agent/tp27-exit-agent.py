@@ -13,7 +13,7 @@ from pathlib import Path
 
 import requests
 
-VERSION = '1.3.0'
+VERSION = '1.4.0'
 RAW = os.environ.get('TP27_REPO_RAW', 'https://raw.githubusercontent.com/matin111/tp27-core/main')
 ROOT = Path('/etc/tp27')
 CONFIG = ROOT / 'exit-agent.json'
@@ -289,6 +289,12 @@ def action_provision_gre_exit(args):
     gre_key = int(args.get('gre_key', 0))
     if not 1 <= gre_key <= 4294967295:
         raise ValueError('invalid GRE key')
+    transport = str(args.get('transport') or 'gre').strip().lower()
+    if transport not in {'gre', 'gre-fou'}:
+        raise ValueError('invalid GRE transport')
+    fou_port = int(args.get('fou_port') or 0)
+    if transport == 'gre-fou' and not 1024 <= fou_port <= 65535:
+        raise ValueError('invalid FOU port')
 
     refresh_data_plane()
     EXITS.mkdir(parents=True, exist_ok=True)
@@ -304,7 +310,8 @@ def action_provision_gre_exit(args):
         'gre_key': gre_key,
         'mtu': mtu,
         'txqueuelen': int(args.get('txqueuelen', 1000)),
-        'transport': 'gre',
+        'transport': transport,
+        'fou_port': fou_port,
     }
     atomic_json(EXITS / (eid + '.json'), cfg)
 
@@ -324,7 +331,9 @@ def action_provision_gre_exit(args):
 
     return {
         'id': eid,
-        'mode': 'gre-native',
+        'mode': 'gre-fou' if transport == 'gre-fou' else 'gre-native',
+        'transport': transport,
+        'fou_port': fou_port or None,
         'service_active': active,
         'health_ping': ping_rc == 0,
         'ping_output': ping_out or ping_err,
