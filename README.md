@@ -1,37 +1,8 @@
-# TP27 Core
+# TP27 Core v0.2
 
-Standalone multi-exit L3 tunnel manager for Ubuntu/Debian.
+Standalone encrypted L3 tunnel core for **one Iran ingress -> multiple foreign exits**.
 
-TP27 is intentionally independent from TwinPanel and any existing VPN panel.
-
-## Layout on server
-
-- `/etc/tp27/` configuration and node keys
-- `/var/lib/tp27/` runtime state
-- `/var/log/tp27/` logs
-- `/usr/local/lib/tp27/` installed Python programs
-- `/usr/local/bin/tp27ctl` CLI
-- `tp27-agent.service` health/auto-heal daemon
-- `TP27_PRE`, `TP27_POST`, `TP27_FWD` dedicated iptables chains
-
-It does not edit TwinPanel files or services.
-
-## Supported topology
-
-    Clients
-       |
-       v
-    Iran Node
-      |  \
-      |   \__ tp27e02 -> Exit-02
-      |
-      \______ tp27e01 -> Exit-01
-
-Each exit has an independent WireGuard L3 path. TCP and UDP service
-forwarding can be mapped independently to each exit.
-
-For L2TP/IPsec, one active exit at a time should own UDP 500/4500/1701
-on a single Iran public IP.
+TP27 is independent from TwinPanel. The Iran<->Exit transport in v0.2 is **Linux TUN over mutually-authenticated TLS/TCP**; WireGuard is not used as the TP27 transport.
 
 ## Install
 
@@ -41,81 +12,41 @@ Iran node:
 curl -fsSL https://raw.githubusercontent.com/matin111/tp27-core/main/install.sh | bash -s -- iran
 ```
 
-Exit node:
+Exit node can be installed manually:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/matin111/tp27-core/main/install.sh | bash -s -- exit
 ```
 
-After installation:
+or automatically from the Iran node during pairing.
+
+## Automatic pairing
+
+Run on the Iran node:
 
 ```bash
-tp27ctl status
-tp27ctl doctor
+tp27 add-exit 168.222.49.180
 ```
 
-## Pair an exit
+TP27 automatically installs/upgrades the Exit over SSH, allocates an isolated /30 tunnel, creates per-link certificates, exchanges public certificates with SCP, starts both systemd units, and verifies the data plane with ping.
 
-On the exit:
+No WireGuard public/private key exchange is involved.
+
+## Commands
 
 ```bash
-tp27ctl exit-init --id exit01 --listen-port 51877 --tunnel-ip 10.254.250.1/30
-tp27ctl exit-info
+tp27 status
+tp27 doctor
+tp27 logs exit01
+tp27 add-exit <EXIT_IP>
 ```
 
-Copy the printed exit public key.
+Each additional Exit gets its own TUN interface and systemd unit.
 
-On Iran:
+## Migration from v0.1
 
-```bash
-tp27ctl add-exit \
-  --id exit01 \
-  --endpoint 168.222.49.180 \
-  --port 51877 \
-  --exit-public-key 'EXIT_PUBLIC_KEY' \
-  --local-ip 10.254.250.2/30 \
-  --remote-ip 10.254.250.1
-```
+The installer backs up `/etc/tp27/config.json` and removes only old TP27 interfaces recorded in that file whose names begin with `tp27`. Unrelated VPN interfaces such as `wg1` are not touched.
 
-The Iran command prints `IRAN_PUBLIC_KEY`.
+## Current transport
 
-Back on Exit:
-
-```bash
-tp27ctl exit-add-peer \
-  --peer-public-key 'IRAN_PUBLIC_KEY' \
-  --peer-ip 10.254.250.2/32
-```
-
-Then verify:
-
-```bash
-tp27ctl status
-ping -c 4 10.254.250.1
-```
-
-## Add service forwarding
-
-Example for the first exit:
-
-```bash
-tp27ctl forward-add --exit exit01 --proto tcp --listen 8897 --target 8897
-tp27ctl forward-add --exit exit01 --proto udp --listen 8897 --target 8897
-tp27ctl forward-add --exit exit01 --proto tcp --listen 9988 --target 9988
-tp27ctl forward-add --exit exit01 --proto udp --listen 55821 --target 55821
-```
-
-L2TP/IPsec active exit:
-
-```bash
-tp27ctl l2tp-active --exit exit01
-```
-
-## Uninstall
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/matin111/tp27-core/main/uninstall.sh | bash
-```
-
-The uninstall script only removes TP27-owned services, interfaces, files,
-and dedicated firewall chains.
+v0.2 ships the first production transport: mTLS/TCP. Additional transports and automatic failover can be added behind the same TP27 control plane without changing the VPN services hosted on Exit servers.
