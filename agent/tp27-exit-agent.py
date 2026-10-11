@@ -8,22 +8,36 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 import requests
 
-VERSION = '1.1.0'
+VERSION = '1.2.0'
+RAW = os.environ.get('TP27_REPO_RAW', 'https://raw.githubusercontent.com/matin111/tp27-core/main')
 ROOT = Path('/etc/tp27')
 CONFIG = ROOT / 'exit-agent.json'
 CERTS = ROOT / 'certs'
 EXITS = ROOT / 'exits'
+LINK_BIN = Path('/usr/local/lib/tp27/tp27-link')
+LINK_UNIT = Path('/etc/systemd/system/tp27-link@.service')
+AGENT_FILE = Path('/opt/tp27-exit-agent/tp27-exit-agent.py')
+AGENT_UNIT = Path('/etc/systemd/system/tp27-exit-agent.service')
 
 
 def atomic_json(path: Path, data, mode=0o600):
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + '.tmp')
     tmp.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def atomic_text(path: Path, text: str, mode=0o600):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    tmp.write_text(text, encoding='utf-8')
     os.chmod(tmp, mode)
     os.replace(tmp, path)
 
@@ -121,13 +135,21 @@ def safe_id(value):
     return value
 
 
+def _pem(value, label, max_len=40000):
+    value = str(value or '')
+    if f'BEGIN {label}' not in value or len(value) > max_len:
+        raise ValueError(f'invalid {label.lower()}')
+    return value.strip() + '\n'
+
+
 def action_status(_args):
     rc, out, err = run(['tp27', 'status'], timeout=20, check=False)
     _, addr, _ = run(['ip', '-br', 'addr'], timeout=10, check=False)
-    return {'tp27_rc': rc, 'tp27': out or err, 'addresses': addr[:12000]}
+    return {'tp27_rc': rc, 'tp27': out or err, 'addresses': addr[:12000], 'agent_version': VERSION}
 
 
 def action_provision_exit(args):
+    # Legacy Iran->Exit listener mode, kept for backward compatibility.
     eid = safe_id(str(args.get('id', '')))
     listen_port = int(args.get('listen_port'))
     if not 1 <= listen_port <= 65535:
@@ -137,14 +159,11 @@ def action_provision_exit(args):
     mtu = int(args.get('mtu', 1280))
     if not 1000 <= mtu <= 1500:
         raise ValueError('invalid mtu')
-    client_ca_pem = str(args.get('client_ca_pem', ''))
-    if 'BEGIN CERTIFICATE' not in client_ca_pem or len(client_ca_pem) > 20000:
-        raise ValueError('invalid client certificate')
+    client_ca_pem = _pem(args.get('client_ca_pem'), 'CERTIFICATE', 20000)
 
     CERTS.mkdir(parents=True, exist_ok=True)
     ca_path = CERTS / (eid + '-iran.crt')
-    ca_path.write_text(client_ca_pem.strip() + '\n', encoding='utf-8')
-    os.chmod(ca_path, 0o644)
+    atomic_text(ca_path, client_ca_pem, 0o644)
 
     cmd = [
         'tp27', 'exit-provision',
@@ -171,6 +190,64 @@ def action_provision_exit(args):
     }
 
 
+def action_provision_reverse_exit(args):
+    # Preferred mode for Iran routes: the Exit initiates the TLS connection to
+    # the Iran listener. All peer material is controller-generated and pinned.
+    eid = safe_id(str(args.get('id', '')))
+    iran_endpoint = str(args.get('iran_endpoint', '')).strip()
+    ipaddress.ip_address(iran_endpoint)
+    listen_port = int(args.get('listen_port'))
+    if not 1 <= listen_port <= 65535:
+        raise ValueError('invalid listen_port')
+    tunnel_ip = str(args.get('tunnel_ip', ''))
+    ipaddress.ip_interface(tunnel_ip)
+    mtu = int(args.get('mtu', 1280))
+    if not 1000 <= mtu <= 1500:
+        raise ValueError('invalid mtu')
+
+    ca_pem = _pem(args.get('ca_pem'), 'CERTIFICATE')
+    cert_pem = _pem(args.get('client_cert_pem'), 'CERTIFICATE')
+    key_pem = _pem(args.get('client_key_pem'), 'PRIVATE KEY')
+
+    CERTS.mkdir(parents=True, exist_ok=True)
+    EXITS.mkdir(parents=True, exist_ok=True)
+    ca_path = CERTS / (eid + '-reverse-ca.crt')
+    cert_path = CERTS / (eid + '-reverse-client.crt')
+    key_path = CERTS / (eid + '-reverse-client.key')
+    atomic_text(ca_path, ca_pem, 0o644)
+    atomic_text(cert_path, cert_pem, 0o644)
+    atomic_text(key_path, key_pem, 0o600)
+
+    iface = ('t27' + re.sub(r'[^a-z0-9]', '', eid.lower()))[:15]
+    cfg = {
+        'role': 'exit-connect',
+        'id': eid,
+        'interface': iface,
+        'tunnel_ip': tunnel_ip,
+        'endpoint': iran_endpoint,
+        'listen_port': listen_port,
+        'mtu': mtu,
+        'ca_file': str(ca_path),
+        'cert': str(cert_path),
+        'key': str(key_path),
+    }
+    atomic_json(EXITS / (eid + '.json'), cfg)
+    run(['systemctl', 'daemon-reload'], timeout=20)
+    rc, out, err = run(['systemctl', 'enable', '--now', 'tp27-link@' + eid + '.service'], timeout=30, check=False)
+    if rc != 0:
+        raise RuntimeError(err or out or 'reverse exit link start failed')
+    time.sleep(1)
+    active = subprocess.run(['systemctl', 'is-active', '--quiet', 'tp27-link@' + eid + '.service']).returncode == 0
+    return {
+        'id': eid,
+        'mode': 'reverse',
+        'iran_endpoint': iran_endpoint,
+        'listen_port': listen_port,
+        'tunnel_ip': tunnel_ip,
+        'service_active': active,
+    }
+
+
 def action_restart_link(args):
     eid = safe_id(str(args.get('id', '')))
     svc = 'tp27-link@' + eid + '.service'
@@ -194,12 +271,12 @@ def action_delete_exit(args):
         pass
 
     removed = []
-    for path in (
-        CERTS / (eid + '.crt'),
-        CERTS / (eid + '.key'),
-        CERTS / (eid + '-iran.crt'),
-        CERTS / (eid + '-iran.key'),
-    ):
+    patterns = [
+        eid + '.crt', eid + '.key', eid + '-iran.crt', eid + '-iran.key',
+        eid + '-reverse-ca.crt', eid + '-reverse-client.crt', eid + '-reverse-client.key',
+    ]
+    for name in patterns:
+        path = CERTS / name
         try:
             if path.exists():
                 path.unlink()
@@ -210,11 +287,38 @@ def action_delete_exit(args):
     return {'id': eid, 'deleted': True, 'removed': removed}
 
 
+def _download(url, path, mode):
+    r = requests.get(url, timeout=30)
+    r.raise_for_status()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + '.new')
+    tmp.write_bytes(r.content)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def action_upgrade_agent(_args):
+    # Fixed-source, allowlisted upgrade. No arbitrary URL or shell is accepted.
+    _download(RAW + '/agent/tp27-exit-agent.py', AGENT_FILE, 0o700)
+    _download(RAW + '/bin/tp27-link-mtls', LINK_BIN, 0o755)
+    _download(RAW + '/systemd/tp27-link@.service', LINK_UNIT, 0o644)
+    _download(RAW + '/systemd/tp27-exit-agent.service', AGENT_UNIT, 0o644)
+    run(['systemctl', 'daemon-reload'], timeout=20)
+    # Restart after the result has had time to reach the controller.
+    run([
+        'systemd-run', '--unit=tp27-agent-delayed-restart', '--on-active=5s',
+        '/bin/systemctl', 'restart', 'tp27-exit-agent.service'
+    ], timeout=15, check=False)
+    return {'upgrade_scheduled': True, 'target_version': VERSION}
+
+
 ACTIONS = {
     'status': action_status,
     'provision_exit': action_provision_exit,
+    'provision_reverse_exit': action_provision_reverse_exit,
     'restart_link': action_restart_link,
     'delete_exit': action_delete_exit,
+    'upgrade_agent': action_upgrade_agent,
 }
 
 
