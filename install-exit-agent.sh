@@ -21,8 +21,6 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y python3-venv ca-certificates curl
 
-# Always refresh the TP27 core. This preserves /etc/tp27/config.json while
-# bringing the current data-plane binary and systemd unit to the Exit node.
 CORE_INSTALLER="$(mktemp /tmp/tp27-core-install.XXXXXX.sh)"
 trap 'rm -f "$CORE_INSTALLER"' EXIT
 curl -fsSL "$RAW/install.sh" -o "$CORE_INSTALLER"
@@ -67,8 +65,8 @@ fi
 echo "============================================================"
 echo " TP27 EXIT AGENT READY"
 echo " Controller: $CONTROLLER"
-echo " Agent version: 1.2.1"
-echo " Core data-plane: refreshed"
+echo " Agent version: 1.3.0"
+echo " Core data-plane: GRE FAST + TLS fallback"
 echo " Service: active"
 echo " Config: /etc/tp27/exit-agent.json"
 echo "============================================================"
