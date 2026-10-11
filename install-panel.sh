@@ -27,15 +27,9 @@ except Exception:
     print('')
 PY
 )"
-  if [[ -n "$ip" ]] && valid_ip "$ip"; then
-    echo "$ip"
-    return 0
-  fi
+  if [[ -n "$ip" ]] && valid_ip "$ip"; then echo "$ip"; return 0; fi
   ip="$(curl -4 -fsS --max-time 5 https://ifconfig.me 2>/dev/null || true)"
-  if [[ -n "$ip" ]] && valid_ip "$ip"; then
-    echo "$ip"
-    return 0
-  fi
+  if [[ -n "$ip" ]] && valid_ip "$ip"; then echo "$ip"; return 0; fi
   ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
   [[ -n "$ip" ]] && valid_ip "$ip" && echo "$ip"
 }
@@ -47,7 +41,6 @@ else
   DETECTED_IP="$(detect_ip || true)"
   [[ -n "$DETECTED_IP" ]] || { echo "ERROR: could not detect server IP; run: install-panel.sh <IP>"; exit 3; }
   IP="$DETECTED_IP"
-
   if [[ -r /dev/tty && -w /dev/tty ]]; then
     echo
     echo "Detected server IP: $DETECTED_IP"
@@ -68,7 +61,7 @@ echo "============================================================"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y python3-venv openssl curl ca-certificates
+apt-get install -y python3-venv openssl curl ca-certificates iptables
 
 install -d -m 755 /opt/tp27-panel /opt/tp27-panel/static
 install -d -m 700 /etc/tp27 /var/log/tp27/panel-jobs
@@ -77,13 +70,14 @@ python3 -m venv /opt/tp27-panel/venv
 curl -fsSL "$RAW/panel/requirements.txt" -o /opt/tp27-panel/requirements.txt
 /opt/tp27-panel/venv/bin/pip install -r /opt/tp27-panel/requirements.txt
 
-for f in app.py auth.py provision.py; do
+for f in app.py auth.py provision.py ports.py; do
   curl -fsSL "$RAW/panel/$f" -o "/opt/tp27-panel/$f"
 done
 for f in index.html login.html style.css app.js; do
   curl -fsSL "$RAW/panel/static/$f" -o "/opt/tp27-panel/static/$f"
 done
 curl -fsSL "$RAW/systemd/tp27-panel.service" -o /etc/systemd/system/tp27-panel.service
+curl -fsSL "$RAW/systemd/tp27-ports-reconcile.service" -o /etc/systemd/system/tp27-ports-reconcile.service
 chmod 600 /opt/tp27-panel/*.py
 
 NEW_PASSWORD=""
@@ -109,8 +103,6 @@ fi
 printf '%s\n' "$IP" >/etc/tp27/panel-ip
 chmod 600 /etc/tp27/panel-ip
 
-# Always create a local fallback certificate first so panel installation remains usable
-# even if public certificate issuance is temporarily unavailable.
 if [[ ! -f /etc/tp27/panel.key || ! -f /etc/tp27/panel.crt ]]; then
   openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 3650 \
     -subj "/CN=$IP" -addext "subjectAltName=IP:$IP" \
@@ -121,6 +113,8 @@ fi
 
 systemctl daemon-reload
 systemctl enable --now tp27-panel.service
+systemctl enable tp27-ports-reconcile.service >/dev/null 2>&1 || true
+systemctl restart tp27-ports-reconcile.service || true
 
 SSL_STATE="self-signed"
 echo
@@ -159,6 +153,7 @@ fi
 
 echo
 echo " Service: $(systemctl is-active tp27-panel.service || true)"
+echo " Port reconcile: $(systemctl is-active tp27-ports-reconcile.service || true)"
 if [[ "$SSL_STATE" == "trusted" ]]; then
   echo " Trusted IP certificate and automatic renewal: enabled"
 else
