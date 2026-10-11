@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -17,6 +17,9 @@ from ports import add_custom, apply_profile, set_l2tp, state as port_state
 from portplan import validate_plan
 
 BASE = Path(__file__).resolve().parent
+CONTROL_KEY = Path('/etc/tp27/control_ed25519')
+CONTROL_PUB = Path('/etc/tp27/control_ed25519.pub')
+
 app = FastAPI(title='TP27 Control Panel', docs_url=None, redoc_url=None)
 app.mount('/static', StaticFiles(directory=BASE / 'static'), name='static')
 
@@ -32,6 +35,12 @@ def guard(request: Request):
 
 def html(name):
     return (BASE / 'static' / name).read_text(encoding='utf-8')
+
+
+def control_key_text():
+    if not CONTROL_KEY.is_file():
+        return None
+    return CONTROL_KEY.read_text(encoding='utf-8')
 
 
 class SSHProbe(BaseModel):
@@ -103,6 +112,17 @@ async def home(request: Request):
     return HTMLResponse(html('index.html')) if authed(request) else RedirectResponse('/login')
 
 
+# Public key is intentionally public. The private control key never leaves Iran.
+@app.get('/api/control-key', response_class=PlainTextResponse)
+async def public_control_key():
+    if not CONTROL_PUB.is_file():
+        raise HTTPException(status_code=404, detail='control key not initialized')
+    return PlainTextResponse(
+        CONTROL_PUB.read_text(encoding='utf-8').strip() + '\n',
+        headers={'Cache-Control': 'no-store'},
+    )
+
+
 @app.get('/api/status')
 async def status(request: Request):
     guard(request)
@@ -128,8 +148,13 @@ async def status(request: Request):
 async def do_preflight(body: SSHProbe):
     if body.password and not body.private_key:
         return await preflight_password(body.host, body.port, body.username, body.password)
+
+    effective_key = body.private_key or control_key_text()
+    if not effective_key:
+        return {'ok': False, 'error': 'سرور خارج هنوز Enrollment نشده است.', 'error_type': 'NotEnrolled'}
+
     return await preflight(body.host, body.port, body.username,
-                           body.password, body.private_key)
+                           body.password, effective_key)
 
 
 @app.post('/api/preflight')
@@ -156,8 +181,9 @@ async def add_exit(request: Request, body: ExitCreate):
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    if not body.password and not body.private_key:
-        raise HTTPException(status_code=400, detail='رمز یا کلید SSH لازم است')
+    effective_key = body.private_key or (None if body.password else control_key_text())
+    if not body.password and not effective_key:
+        raise HTTPException(status_code=400, detail='سرور خارج هنوز Enrollment نشده است')
 
     probe = await do_preflight(body)
     if not probe.get('ok'):
@@ -175,7 +201,7 @@ async def add_exit(request: Request, body: ExitCreate):
     else:
         asyncio.create_task(provision(
             job_id, body.host, body.port, body.username,
-            body.password, body.private_key, body.id,
+            body.password, effective_key, body.id,
             body.tunnel_port, body.mtu, mapping_plan,
         ))
     return {'job_id': job_id}
