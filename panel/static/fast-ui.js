@@ -51,3 +51,62 @@ function renderDiagnosis(d){
   $('repairBtn').textContent=d.healthy?'Restart Link':'تعمیر خودکار';
   $('repairBtn').disabled=false;
 }
+
+const tp27OpenTunnelManageBase=openTunnelManage;
+openTunnelManage=function(id){
+  tp27OpenTunnelManageBase(id);
+  const x=tunnelById(id);
+  const btn=$('upgradeFastBtn');
+  if(btn){
+    const alreadyFast=!!(x&&(x.mode==='fast-pool'||Number(x.channels_total||1)>1));
+    btn.classList.toggle('hidden',alreadyFast);
+    btn.disabled=alreadyFast;
+  }
+};
+
+async function upgradeManagedTunnelFast(){
+  if(!managedTunnelId)return;
+  const x=tunnelById(managedTunnelId);
+  const box=$('manageMessage');
+  if(!x){box.textContent='خطا: اطلاعات Tunnel پیدا نشد';return}
+  if(x.mode==='fast-pool'||Number(x.channels_total||1)>1){box.textContent='این Tunnel از قبل FAST است';return}
+  if(!x.agent_id){box.textContent='خطا: این Tunnel به Agent متصل نیست';return}
+  const agent=agents.find(a=>a.agent_id===x.agent_id);
+  if(!agent||!agent.online){box.textContent='خطا: Agent سرور خارج آفلاین است';return}
+
+  const mappings=(x.mappings||[]).map(m=>({
+    service:m.service,
+    proto:m.proto,
+    listen_port:Number(m.listen_port),
+    target_port:Number(m.target_port)
+  }));
+  const id=x.id;
+  const btn=$('upgradeFastBtn');
+  if(btn)btn.disabled=true;
+  box.textContent='در حال تبدیل Tunnel قدیمی به FAST...';
+
+  try{
+    const removed=await api('/api/exits/'+encodeURIComponent(id),{method:'DELETE'});
+    box.textContent='Link قدیمی جمع شد؛ در حال ساخت Fast Pool چهارکاناله...';
+    const body={
+      agent_id:x.agent_id,
+      host:x.endpoint||agent.public_ip||'',
+      port:22,
+      username:'root',
+      password:null,
+      private_key:null,
+      id:id,
+      tunnel_port:null,
+      mtu:1280,
+      mappings:mappings
+    };
+    const created=await api('/api/exits',{method:'POST',body:JSON.stringify(body)});
+    closeTunnelManage();
+    $('job').textContent=(removed.warning?removed.warning+' · ':'')+'در حال ساخت FAST...';
+    pollJob(created.job_id);
+  }catch(e){
+    box.textContent='خطا در تبدیل به FAST: '+e.message;
+    if(btn)btn.disabled=false;
+    await refreshAll();
+  }
+}
