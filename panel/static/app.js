@@ -1,12 +1,16 @@
 const $=id=>document.getElementById(id);
-const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;'}[c]));
 let agents=[];
+let wizardBaseline=new Set();
+let wizardTimer=null;
+let wizardReadyAgent=null;
 
 async function api(url,opt={}){
   const r=await fetch(url,{credentials:'same-origin',headers:{'Content-Type':'application/json',...(opt.headers||{})},...opt});
-  const j=await r.json();
-  if(!r.ok)throw new Error(j.detail||j.error||'خطا');
-  return j;
+  const type=r.headers.get('content-type')||'';
+  const body=type.includes('application/json')?await r.json():{detail:await r.text()};
+  if(!r.ok)throw new Error(body.detail||body.error||'خطا');
+  return body;
 }
 
 function mappingBadges(items=[]){
@@ -25,7 +29,6 @@ async function loadStatus(){
         <div class="exit-main">
           <div><span class="dot ${x.healthy?'good':'bad'}"></span><b>${esc(x.id)}</b></div>
           <div class="muted">${esc(x.endpoint)}:${esc(x.port)} · ${esc(x.interface)} · ${esc(x.remote_ip)}</div>
-          ${x.agent_id?`<div class="muted">Agent: ${esc(x.agent_id)}</div>`:''}
           ${mappingBadges(x.mappings)}
         </div>
       </div>`).join(''):'<div class="muted">بدون تونل</div>';
@@ -36,65 +39,40 @@ async function loadAgents(){
   try{
     const data=await api('/api/agents');
     agents=data.agents||[];
-    $('agentCount').textContent=agents.filter(x=>x.online).length;
+    $('agentCount').textContent=agents.length;
     $('agentList').innerHTML=agents.length?agents.map(a=>`
-      <div class="exit">
+      <div class="exit agent-card">
         <div class="exit-main">
           <div><span class="dot ${a.online?'good':'bad'}"></span><b>${esc(a.hostname||a.agent_id)}</b></div>
-          <div class="muted">${esc(a.public_ip||'-')} · ${esc(a.agent_id)} · v${esc(a.version||'-')}</div>
+          <div class="muted">${esc(a.public_ip||'-')} · ${a.online?'آنلاین':'آفلاین'} · v${esc(a.version||'-')}</div>
         </div>
-      </div>`).join(''):'<div class="muted">بدون Agent</div>';
+      </div>`).join(''):'<div class="muted">بدون سرور خارج</div>';
 
     const sel=$('agentId');
     const current=sel.value;
-    sel.innerHTML='<option value="">SSH دستی</option>'+agents.map(a=>`<option value="${esc(a.agent_id)}" ${a.online?'':'disabled'}>${esc(a.hostname||a.agent_id)} · ${esc(a.public_ip||'-')}${a.online?'':' · offline'}</option>`).join('');
+    sel.innerHTML='<option value="">انتخاب سرور</option>'+agents.map(a=>`<option value="${esc(a.agent_id)}" ${a.online?'':'disabled'}>${esc(a.hostname||a.agent_id)} · ${esc(a.public_ip||'-')}${a.online?'':' · آفلاین'}</option>`).join('');
     if([...sel.options].some(o=>o.value===current&&!o.disabled))sel.value=current;
-    syncAgentSelection();
-  }catch(e){$('agentList').innerHTML='<div class="muted">'+esc(e.message)+'</div>'}
-}
-
-function syncAgentSelection(){
-  const aid=$('agentId').value;
-  const a=agents.find(x=>x.agent_id===aid);
-  if(a){
-    $('host').value=a.public_ip||'';
-    $('host').readOnly=true;
-    $('sshFallback').open=false;
-    $('sshFallback').classList.add('disabled-block');
-  }else{
-    $('host').readOnly=false;
-    $('sshFallback').classList.remove('disabled-block');
+    return agents;
+  }catch(e){
+    $('agentList').innerHTML='<div class="muted">'+esc(e.message)+'</div>';
+    return [];
   }
 }
 
-async function showEnrollment(){
-  const box=$('enrollmentBox');
-  try{
-    const r=await api('/api/agents/enrollment');
-    const cmd=`curl -fsSL https://raw.githubusercontent.com/matin111/tp27-core/main/install-exit-agent.sh | bash -s -- ${location.origin} ${r.token}`;
-    box.innerHTML=`<b>Token</b><br><code>${esc(r.token)}</code><br><br><b>Install</b><br><code>${esc(cmd)}</code>`;
-    box.classList.remove('hidden');
-  }catch(e){box.textContent=e.message;box.classList.remove('hidden')}
-}
-
-async function rotateEnrollment(){
-  const box=$('enrollmentBox');
-  try{
-    const r=await api('/api/agents/enrollment/rotate',{method:'POST',body:'{}'});
-    const cmd=`curl -fsSL https://raw.githubusercontent.com/matin111/tp27-core/main/install-exit-agent.sh | bash -s -- ${location.origin} ${r.token}`;
-    box.innerHTML=`<b>Token</b><br><code>${esc(r.token)}</code><br><br><b>Install</b><br><code>${esc(cmd)}</code>`;
-    box.classList.remove('hidden');
-  }catch(e){box.textContent=e.message;box.classList.remove('hidden')}
+function selectedAgent(){
+  const aid=$('agentId').value;
+  return agents.find(x=>x.agent_id===aid)||null;
 }
 
 function connectionPayload(){
+  const a=selectedAgent();
   return{
-    agent_id:$('agentId').value||null,
-    host:$('host').value.trim(),
-    port:Number($('sshPort').value||22),
-    username:$('sshUser').value.trim()||'root',
-    password:$('password').value||null,
-    private_key:$('privateKey').value.trim()||null
+    agent_id:a?a.agent_id:null,
+    host:a?(a.public_ip||''):'',
+    port:22,
+    username:'root',
+    password:null,
+    private_key:null
   };
 }
 
@@ -113,6 +91,7 @@ function collectMappings(){
 
 function payload(){
   const p=connectionPayload();
+  if(!p.agent_id)throw new Error('سرور خارج را انتخاب کنید');
   p.id=$('exitId').value.trim()||null;
   p.tunnel_port=Number($('tunnelPort').value)||null;
   p.mtu=1280;
@@ -151,23 +130,24 @@ function standardPorts(){
 }
 
 async function runPreflight(show=true){
+  if(!selectedAgent())throw new Error('سرور خارج را انتخاب کنید');
   const r=await api('/api/preflight',{method:'POST',body:JSON.stringify(connectionPayload())});
-  if(!r.ok)throw new Error(r.error||r.stderr||'اتصال ناموفق بود');
-  if(show)$('job').textContent=(r.mode==='agent'?'Agent':'SSH')+': OK';
+  if(!r.ok)throw new Error(r.error||'سرور در دسترس نیست');
+  if(show)$('job').textContent='سرور آماده است';
   return r;
 }
 
 async function preflight(){
-  const j=$('job');j.textContent='تست اتصال...';
+  const j=$('job');j.textContent='در حال بررسی...';
   try{await runPreflight(true)}catch(e){j.textContent='خطا: '+e.message}
 }
 
 async function addExit(){
   const j=$('job');
-  j.textContent='بررسی اتصال...';
+  j.textContent='در حال بررسی...';
   try{
     await runPreflight(false);
-    j.textContent='شروع ساخت تونل...';
+    j.textContent='در حال ساخت تونل...';
     const r=await api('/api/exits',{method:'POST',body:JSON.stringify(payload())});
     pollJob(r.job_id);
   }catch(e){j.textContent='خطا: '+e.message}
@@ -178,16 +158,81 @@ async function pollJob(id){
     const r=await api('/api/jobs/'+id);
     $('job').innerHTML='<b>'+esc(r.state)+'</b><br>'+r.messages.map(x=>esc(x.text)).join('<br>');
     if(r.state==='done'){
-      $('password').value='';$('privateKey').value='';refreshAll();return;
+      refreshAll();return;
     }
     if(r.state==='failed')return;
     setTimeout(()=>pollJob(id),1500);
   }catch(e){$('job').textContent=e.message}
 }
 
+function setWizardState(text,state='wait'){
+  $('wizardStatus').textContent=text;
+  $('wizardDot').className='dot '+(state==='ok'?'good':state==='bad'?'bad':'wait');
+}
+
+async function openServerWizard(){
+  wizardReadyAgent=null;
+  wizardBaseline=new Set(agents.map(x=>x.agent_id));
+  $('serverWizard').classList.remove('hidden');
+  $('wizardWaiting').classList.remove('hidden');
+  $('wizardReady').classList.add('hidden');
+  $('installCommand').textContent='';
+  setWizardState('در حال آماده‌سازی...');
+
+  try{
+    const r=await api('/api/agents/enrollment/rotate',{method:'POST',body:'{}'});
+    const cmd=`curl -fsSL https://raw.githubusercontent.com/matin111/tp27-core/main/install-exit-agent.sh | bash -s -- '${location.origin}' '${r.token}'`;
+    $('installCommand').textContent=cmd;
+    setWizardState('در انتظار اتصال سرور خارج');
+    clearInterval(wizardTimer);
+    wizardTimer=setInterval(checkEnrollmentNow,2000);
+  }catch(e){
+    setWizardState(e.message,'bad');
+  }
+}
+
+function closeServerWizard(){
+  $('serverWizard').classList.add('hidden');
+  clearInterval(wizardTimer);
+  wizardTimer=null;
+}
+
+async function copyInstallCommand(){
+  const text=$('installCommand').textContent.trim();
+  if(!text)return;
+  try{
+    await navigator.clipboard.writeText(text);
+    setWizardState('دستور کپی شد؛ روی سرور خارج اجرا کنید');
+  }catch(_){
+    const ta=document.createElement('textarea');
+    ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();
+    setWizardState('دستور کپی شد؛ روی سرور خارج اجرا کنید');
+  }
+}
+
+async function checkEnrollmentNow(){
+  const list=await loadAgents();
+  const found=list.find(a=>a.online&&!wizardBaseline.has(a.agent_id));
+  if(!found)return;
+  wizardReadyAgent=found;
+  clearInterval(wizardTimer);wizardTimer=null;
+  $('wizardWaiting').classList.add('hidden');
+  $('wizardReady').classList.remove('hidden');
+  $('readyAgentName').textContent=found.hostname||found.agent_id;
+  $('readyAgentMeta').textContent=(found.public_ip||'-')+' · آنلاین';
+}
+
+function useReadyAgent(){
+  if(!wizardReadyAgent)return;
+  const sel=$('agentId');
+  if([...sel.options].some(o=>o.value===wizardReadyAgent.agent_id))sel.value=wizardReadyAgent.agent_id;
+  closeServerWizard();
+  document.querySelector('.builder').scrollIntoView({behavior:'smooth',block:'start'});
+  $('job').textContent='سرور انتخاب شد';
+}
+
 async function refreshAll(){await Promise.all([loadStatus(),loadAgents()])}
 
-$('agentId').addEventListener('change',syncAgentSelection);
 standardPorts();
 refreshAll();
 setInterval(refreshAll,10000);
