@@ -17,15 +17,21 @@ if [[ "$CONTROLLER" != https://* ]]; then
   exit 3
 fi
 
-command -v tp27 >/dev/null || {
-  echo "ERROR: TP27 core is not installed on this Exit."
-  echo "Install TP27 core as role=exit first, then rerun this installer."
-  exit 4
-}
-
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y python3-venv ca-certificates curl
+
+if ! command -v tp27 >/dev/null; then
+  CORE_INSTALLER="$(mktemp /tmp/tp27-core-install.XXXXXX.sh)"
+  trap 'rm -f "$CORE_INSTALLER"' EXIT
+  curl -fsSL "$RAW/install.sh" -o "$CORE_INSTALLER"
+  chmod 700 "$CORE_INSTALLER"
+  bash "$CORE_INSTALLER" exit
+  rm -f "$CORE_INSTALLER"
+  trap - EXIT
+fi
+
+command -v tp27 >/dev/null || { echo "ERROR: TP27 core install failed"; exit 4; }
 
 install -d -m 755 /opt/tp27-exit-agent
 install -d -m 700 /etc/tp27 /var/log/tp27
