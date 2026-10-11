@@ -1,0 +1,18 @@
+[Unit]
+Description=TP27 Standalone Tunnel Health Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/lib/tp27/tp27-agent.py
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/tp27 /var/log/tp27 /etc/wireguard /run
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
