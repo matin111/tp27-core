@@ -54,12 +54,53 @@ else
   fi
 fi
 
+LIVE="/etc/letsencrypt/live/$IP"
+PANEL_UNIT="/etc/systemd/system/tp27-panel.service"
+
+valid_existing_cert() {
+  command -v openssl >/dev/null 2>&1 || return 1
+  [[ -s "$LIVE/fullchain.pem" && -s "$LIVE/privkey.pem" ]] || return 1
+  openssl x509 -in "$LIVE/fullchain.pem" -noout -checkend 300 >/dev/null 2>&1 || return 1
+  openssl x509 -in "$LIVE/fullchain.pem" -noout -ext subjectAltName 2>/dev/null \
+    | grep -Fq "IP Address:$IP" || return 1
+  return 0
+}
+
+patch_panel_cert() {
+  local key="$1" crt="$2"
+  python3 - "$PANEL_UNIT" "$key" "$crt" <<'PY'
+from pathlib import Path
+import re, sys
+p=Path(sys.argv[1])
+key=sys.argv[2]
+crt=sys.argv[3]
+s=p.read_text()
+new=re.sub(r'--ssl-keyfile\s+\S+\s+--ssl-certfile\s+\S+', f'--ssl-keyfile {key} --ssl-certfile {crt}', s)
+if new == s and '--ssl-keyfile' not in s:
+    raise SystemExit('ERROR: ssl arguments not found in panel unit')
+p.write_text(new)
+PY
+}
+
+wait_for_apt() {
+  for _ in $(seq 1 60); do
+    if ! fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
+      return 0
+    fi
+    echo "Waiting for apt lock..."
+    sleep 2
+  done
+  echo "ERROR: apt remained busy for too long"
+  return 1
+}
+
 echo "============================================================"
 echo " TP27 PANEL INSTALLER"
 echo " PANEL IP: $IP"
 echo "============================================================"
 
 export DEBIAN_FRONTEND=noninteractive
+wait_for_apt
 apt-get update
 apt-get install -y python3-venv openssl curl ca-certificates iptables openssh-client sshpass
 
@@ -76,7 +117,7 @@ done
 for f in index.html login.html style.css app.js; do
   curl -fsSL "$RAW/panel/static/$f" -o "/opt/tp27-panel/static/$f"
 done
-curl -fsSL "$RAW/systemd/tp27-panel.service" -o /etc/systemd/system/tp27-panel.service
+curl -fsSL "$RAW/systemd/tp27-panel.service" -o "$PANEL_UNIT"
 curl -fsSL "$RAW/systemd/tp27-ports-reconcile.service" -o /etc/systemd/system/tp27-ports-reconcile.service
 chmod 600 /opt/tp27-panel/*.py
 
@@ -121,6 +162,16 @@ if [[ ! -f /etc/tp27/panel.key || ! -f /etc/tp27/panel.crt ]]; then
   chmod 644 /etc/tp27/panel.crt
 fi
 
+# The repository service file intentionally has a self-signed fallback. If a
+# valid trusted certificate already exists, patch it back in BEFORE restarting
+# the panel so upgrades never disconnect TLS-verifying agents.
+PREEXISTING_TRUSTED=0
+if valid_existing_cert; then
+  PREEXISTING_TRUSTED=1
+  patch_panel_cert "$LIVE/privkey.pem" "$LIVE/fullchain.pem"
+  echo "Preserving existing trusted IP certificate during upgrade."
+fi
+
 systemctl daemon-reload
 systemctl enable tp27-panel.service >/dev/null 2>&1 || true
 systemctl restart tp27-panel.service
@@ -128,6 +179,8 @@ systemctl enable tp27-ports-reconcile.service >/dev/null 2>&1 || true
 systemctl restart tp27-ports-reconcile.service || true
 
 SSL_STATE="self-signed"
+[[ "$PREEXISTING_TRUSTED" -eq 1 ]] && SSL_STATE="trusted"
+
 echo
 echo "===== TRUSTED IP SSL ====="
 SSL_SCRIPT="$(mktemp /tmp/tp27-ip-ssl.XXXXXX.sh)"
@@ -136,11 +189,21 @@ if curl -fsSL "$RAW/enable-ip-ssl.sh" -o "$SSL_SCRIPT"; then
   if bash "$SSL_SCRIPT" "$IP"; then
     SSL_STATE="trusted"
   else
-    echo "WARNING: trusted IP SSL could not be issued now."
-    echo "Panel remains available with the fallback self-signed certificate."
+    if [[ "$PREEXISTING_TRUSTED" -eq 1 ]]; then
+      echo "WARNING: SSL helper failed, but the existing trusted certificate was preserved."
+      SSL_STATE="trusted"
+    else
+      echo "WARNING: trusted IP SSL could not be issued now."
+      echo "Panel remains available with the fallback self-signed certificate."
+    fi
   fi
 else
-  echo "WARNING: could not download IP SSL helper."
+  if [[ "$PREEXISTING_TRUSTED" -eq 1 ]]; then
+    echo "WARNING: could not download IP SSL helper; existing trusted certificate preserved."
+    SSL_STATE="trusted"
+  else
+    echo "WARNING: could not download IP SSL helper."
+  fi
 fi
 rm -f "$SSL_SCRIPT"
 
