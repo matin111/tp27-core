@@ -75,13 +75,13 @@ setup_gre_underlay_firewall() {
   ensure_chain_hook filter INPUT TP27_GRE_IN
   ensure_chain_hook filter OUTPUT TP27_GRE_OUT
   ensure_rule filter TP27_GRE_IN -p 47 -s "$GRE_REMOTE_PUBLIC/32" -d "$GRE_LOCAL_PUBLIC/32" -j ACCEPT
-  ensure_rule filter TP27_GRE_OUT -p 47 -s "$GRE_LOCAL_PUBLIC_PUBLIC/32" -d "$GRE_REMOTE_PUBLIC/32" -j ACCEPT
+  ensure_rule filter TP27_GRE_OUT -p 47 -s "$GRE_LOCAL_PUBLIC/32" -d "$GRE_REMOTE_PUBLIC/32" -j ACCEPT
 }
 
 cleanup_gre_underlay_firewall() {
   [[ -n "$IPT" && -n "$GRE_LOCAL_PUBLIC" && -n "$GRE_REMOTE_PUBLIC" ]] || return 0
   remove_rule filter TP27_GRE_IN -p 47 -s "$GRE_REMOTE_PUBLIC/32" -d "$GRE_LOCAL_PUBLIC/32" -j ACCEPT
-  remove_rule filter TP27_GRE_OUT -p 47 -s "$GRE_LOCAL_PUBLIC_PUBLIC/32" -d "$GRE_REMOTE_PUBLIC/32" -j ACCEPT
+  remove_rule filter TP27_GRE_OUT -p 47 -s "$GRE_LOCAL_PUBLIC/32" -d "$GRE_REMOTE_PUBLIC/32" -j ACCEPT
 }
 
 ip link del "$IFACE" 2>/dev/null || true
