@@ -12,11 +12,17 @@ from pydantic import BaseModel, Field
 
 from agent_control import get_agent, queue_command, router as agent_router, wait_command
 from auth import make_session, session_ok, verify_password
-from provision import CORE_CONFIG, JOBS, load_json, preflight, provision, run, validate_id
+from provision import (
+    CERTS, CORE_CONFIG, EXITS, JOBS, atomic_json, load_json,
+    preflight, provision, run, validate_id,
+)
 from provision_agent import provision_via_agent
 from provision_password import preflight_password, provision_password
-from ports import add_custom, apply_profile, set_l2tp, state as port_state
-from portplan import validate_plan
+from ports import (
+    PORT_CONFIG, add_custom, apply_profile, atomic_json as ports_atomic_json,
+    reconcile as reconcile_ports, set_l2tp, state as port_state,
+)
+from portplan import apply_plan, validate_plan
 
 BASE = Path(__file__).resolve().parent
 app = FastAPI(title='TP27 Control Panel', docs_url=None, redoc_url=None)
@@ -45,6 +51,39 @@ def find_exit(exit_id: str):
     return None
 
 
+def cleanup_local_exit(exit_id: str):
+    run(['systemctl', 'disable', '--now', f'tp27-link@{exit_id}.service'], check=False)
+    run(['systemctl', 'reset-failed', f'tp27-link@{exit_id}.service'], check=False)
+
+    try:
+        (EXITS / f'{exit_id}.json').unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    for path in (
+        CERTS / f'{exit_id}.crt',
+        CERTS / f'{exit_id}.key',
+        CERTS / f'{exit_id}-iran.crt',
+        CERTS / f'{exit_id}-iran.key',
+    ):
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    core = load_json(CORE_CONFIG)
+    core.setdefault('exits', [])
+    core['exits'] = [x for x in core['exits'] if x.get('id') != exit_id]
+    atomic_json(CORE_CONFIG, core)
+
+    pstate = port_state()
+    pstate['mappings'] = [m for m in pstate.get('mappings', []) if m.get('exit_id') != exit_id]
+    if pstate.get('active_l2tp_exit') == exit_id:
+        pstate['active_l2tp_exit'] = None
+    ports_atomic_json(PORT_CONFIG, pstate)
+    reconcile_ports()
+
+
 async def diagnose_exit_record(item: dict):
     eid = item.get('id', '')
     iface = item.get('interface', '')
@@ -60,7 +99,7 @@ async def diagnose_exit_record(item: dict):
             ['ping', '-I', iface, '-c', '1', '-W', '1', remote_ip], check=False
         )
 
-    log_rc, log_out, log_err = run([
+    _, log_out, log_err = run([
         'journalctl', '-u', f'tp27-link@{eid}.service',
         '-n', '18', '--no-pager', '-o', 'cat'
     ], check=False)
@@ -115,6 +154,10 @@ class ExitCreate(SSHProbe):
     id: Optional[str] = None
     tunnel_port: Optional[int] = Field(default=None, ge=1, le=65535)
     mtu: int = Field(default=1280, ge=1000, le=1500)
+    mappings: list[PortMappingInput] = Field(default_factory=list)
+
+
+class TunnelMappingsUpdate(BaseModel):
     mappings: list[PortMappingInput] = Field(default_factory=list)
 
 
@@ -223,10 +266,66 @@ async def repair_exit(request: Request, exit_id: str):
         raise HTTPException(status_code=400, detail=err or out or 'Restart ایران ناموفق بود')
 
     await asyncio.sleep(4)
-    item = find_exit(exit_id)
-    result = await diagnose_exit_record(item)
+    result = await diagnose_exit_record(find_exit(exit_id))
     result['repaired'] = result.get('healthy', False)
     return result
+
+
+@app.put('/api/exits/{exit_id}/mappings')
+async def update_exit_mappings(request: Request, exit_id: str, body: TunnelMappingsUpdate):
+    guard(request)
+    validate_id(exit_id)
+    if not find_exit(exit_id):
+        raise HTTPException(status_code=404, detail='تونل پیدا نشد')
+    try:
+        plan = validate_plan([m.model_dump() for m in body.mappings], exclude_exit=exit_id)
+        applied = apply_plan(exit_id, plan)
+        return {'ok': True, 'mappings': applied}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete('/api/exits/{exit_id}')
+async def delete_exit(request: Request, exit_id: str):
+    guard(request)
+    validate_id(exit_id)
+    item = find_exit(exit_id)
+    if not item:
+        raise HTTPException(status_code=404, detail='تونل پیدا نشد')
+
+    remote_cleanup = 'not-required'
+    warning = None
+    agent_id = item.get('agent_id')
+    if agent_id:
+        agent = get_agent(agent_id)
+        if agent and agent.get('online'):
+            try:
+                command = queue_command(agent_id, 'delete_exit', {'id': exit_id})
+                result = await wait_command(command['id'], timeout=45)
+                if result.get('state') == 'done' and result.get('ok'):
+                    remote_cleanup = 'done'
+                else:
+                    err = str(result.get('error') or 'حذف روی Agent ناموفق بود')
+                    if 'unsupported action' in err.lower():
+                        remote_cleanup = 'pending-agent-upgrade'
+                        warning = 'تونل از ایران حذف شد؛ Agent فعلی قدیمی است و پاک‌سازی فایل‌های TP27 خارج بعد از ارتقای Agent انجام می‌شود.'
+                    else:
+                        raise RuntimeError(err)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f'حذف روی Agent خارج ناموفق بود: {exc}')
+        else:
+            remote_cleanup = 'pending-agent-online'
+            warning = 'تونل از ایران حذف شد؛ Agent خارج آفلاین است و پاک‌سازی راه دور فعلاً انجام نشد.'
+
+    cleanup_local_exit(exit_id)
+    return {
+        'ok': True,
+        'id': exit_id,
+        'remote_cleanup': remote_cleanup,
+        'warning': warning,
+    }
 
 
 async def do_preflight(body: SSHProbe):
