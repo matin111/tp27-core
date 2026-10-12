@@ -1,0 +1,16 @@
+[Unit]
+Description=TP27 Framed TLS Data Plane (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/tp27/tp27-framed-tls.py --config /etc/tp27/exits/%i.json
+Restart=always
+RestartSec=2
+User=root
+Group=root
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
