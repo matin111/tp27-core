@@ -17,11 +17,11 @@ PHT_PORT="${7:-80}"
 python3 - "$LOCAL_PUBLIC" "$REMOTE_PUBLIC" "$LOCAL_TUN" "$PEER_TUN" <<'PY'
 import ipaddress, sys
 for value in sys.argv[1:3]:
-    a=ipaddress.ip_address(value)
+    a = ipaddress.ip_address(value)
     assert a.version == 4
-iface=ipaddress.ip_interface(sys.argv[3])
+iface = ipaddress.ip_interface(sys.argv[3])
 assert iface.version == 4
-peer=ipaddress.ip_address(sys.argv[4])
+peer = ipaddress.ip_address(sys.argv[4])
 assert peer.version == 4
 assert peer in iface.network
 assert peer != iface.ip
@@ -84,8 +84,10 @@ if (( need_gost )); then
   trap - EXIT
 fi
 
-# Stop only this TP27 link instance. Production VPN daemons are untouched.
+# Stop only this TP27 link instance and any previous PHT attempt.
+# Production VPN daemons are untouched.
 systemctl disable --now "$OLD_SERVICE" >/dev/null 2>&1 || true
+systemctl stop "$SERVICE" >/dev/null 2>&1 || true
 sleep 1
 ip link del "$IFACE" 2>/dev/null || true
 
@@ -94,7 +96,6 @@ if [[ "$ROLE" == "iran" ]]; then
   CHAIN="TP27_PHT_IN"
   iptables -w 5 -t filter -N "$CHAIN" 2>/dev/null || true
   iptables -w 5 -t filter -C INPUT -j "$CHAIN" 2>/dev/null || iptables -w 5 -t filter -I INPUT 1 -j "$CHAIN"
-  # Remove only rules for this listener socket before rebuilding them.
   while iptables -w 5 -t filter -C "$CHAIN" -p tcp -s "$REMOTE_PUBLIC/32" -d "$LOCAL_PUBLIC/32" --dport "$PHT_PORT" -j ACCEPT 2>/dev/null; do
     iptables -w 5 -t filter -D "$CHAIN" -p tcp -s "$REMOTE_PUBLIC/32" -d "$LOCAL_PUBLIC/32" --dport "$PHT_PORT" -j ACCEPT || break
   done
@@ -106,6 +107,11 @@ if [[ "$ROLE" == "iran" ]]; then
 fi
 
 UNIT="/etc/systemd/system/$SERVICE"
+
+# GOST v3 documented TUN-over-TCP pattern:
+# server: tun UDP service + relay over PHT bind listener
+# client: TUN forwards its UDP target through relay+pht chain.
+# Quotes are intentional: systemd must pass '&' literally to GOST.
 if [[ "$ROLE" == "iran" ]]; then
   cat >"$UNIT" <<EOF
 [Unit]
@@ -115,7 +121,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/gost -L=tun://127.0.0.1:${INTERNAL_PORT}?net=${LOCAL_TUN}\&name=${IFACE}\&mtu=1300 -L=relay+pht://${LOCAL_PUBLIC}:${PHT_PORT}?bind=true
+ExecStart=/usr/local/bin/gost "-L=tun://:${INTERNAL_PORT}?net=${LOCAL_TUN}&name=${IFACE}&mtu=1300" "-L=relay+pht://${LOCAL_PUBLIC}:${PHT_PORT}?bind=true"
 Restart=always
 RestartSec=2
 User=root
@@ -134,7 +140,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/gost -L=tun://:0/127.0.0.1:${INTERNAL_PORT}?net=${LOCAL_TUN}\&name=${IFACE}\&mtu=1300\&keepAlive=true\&ttl=5s -F=relay+pht://${REMOTE_PUBLIC}:${PHT_PORT}
+ExecStart=/usr/local/bin/gost "-L=tun://:0/:${INTERNAL_PORT}?net=${LOCAL_TUN}&name=${IFACE}&mtu=1300&keepAlive=true&ttl=5s" "-F=relay+pht://${REMOTE_PUBLIC}:${PHT_PORT}"
 Restart=always
 RestartSec=2
 User=root
@@ -149,8 +155,10 @@ fi
 systemctl daemon-reload
 systemctl enable --now "$SERVICE"
 
-for _ in $(seq 1 20); do
-  ip link show "$IFACE" >/dev/null 2>&1 && break
+for _ in $(seq 1 30); do
+  if ip -4 addr show dev "$IFACE" 2>/dev/null | grep -Fq "inet ${LOCAL_TUN%/*}/"; then
+    break
+  fi
   sleep 0.5
 done
 
@@ -161,14 +169,13 @@ if ! systemctl is-active --quiet "$SERVICE"; then
   exit 7
 fi
 
-if ! ip link show "$IFACE" >/dev/null 2>&1; then
+if ! ip -4 addr show dev "$IFACE" 2>/dev/null | grep -Fq "inet ${LOCAL_TUN%/*}/"; then
   systemctl status "$SERVICE" --no-pager -l || true
   journalctl -u "$SERVICE" -n 80 --no-pager || true
-  echo "ERROR: GOST TUN interface $IFACE was not created" >&2
+  echo "ERROR: GOST TUN interface $IFACE did not receive IPv4 $LOCAL_TUN" >&2
   exit 8
 fi
 
-# Match the existing TP27 interface characteristics used by the mapping layer.
 ip link set dev "$IFACE" mtu 1300 txqueuelen 1000 2>/dev/null || true
 sysctl -q -w "net.ipv4.conf.${IFACE}.rp_filter=0" 2>/dev/null || true
 
@@ -181,6 +188,7 @@ echo " ID: $ID"
 echo " Interface: $IFACE"
 echo " Local tunnel: $LOCAL_TUN"
 echo " Peer tunnel: $PEER_TUN"
+echo " Internal TUN UDP port: $INTERNAL_PORT"
 echo " PHT TCP port: $PHT_PORT"
 echo " Service: $SERVICE"
 echo " Backup: $BACKUP"
