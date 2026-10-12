@@ -33,15 +33,63 @@ def atomic_json(path, data):
 
 
 def default_state():
-    return {'version': 1, 'mapping_mode': 'preserve-port', 'mappings': [], 'active_l2tp_exit': None}
+    return {'version': 2, 'mapping_mode': 'preserve-port', 'mappings': [], 'active_l2tp_exit': None}
+
+
+def _upgrade_openvpn_dual_protocol(cfg):
+    """Add the missing TCP/UDP twin for existing OpenVPN mappings when safe.
+
+    Older TP27 builds created OpenVPN/TCP only. Many production OpenVPN
+    servers are UDP-only, so Cisco could work while OpenVPN silently failed.
+    A twin is added only when the protocol+Iran-port socket is not already
+    owned by another mapping.
+    """
+    rows = cfg.setdefault('mappings', [])
+    occupied = {
+        (str(m.get('proto', '')).lower(), int(m.get('listen_port', 0) or 0))
+        for m in rows if m.get('enabled', True)
+    }
+    additions = []
+    for m in list(rows):
+        if not m.get('enabled', True):
+            continue
+        if str(m.get('service', '')).lower() != 'openvpn':
+            continue
+        proto = str(m.get('proto', '')).lower()
+        if proto not in {'tcp', 'udp'}:
+            continue
+        twin = 'udp' if proto == 'tcp' else 'tcp'
+        listen = int(m.get('listen_port', 0) or 0)
+        target = int(m.get('target_port', 0) or 0)
+        if not (1 <= listen <= 65535 and 1 <= target <= 65535):
+            continue
+        if (twin, listen) in occupied:
+            continue
+        exit_id = str(m.get('exit_id') or '')
+        clone = dict(m)
+        clone['id'] = f'{exit_id}-openvpn-{twin}-{listen}-auto'
+        clone['proto'] = twin
+        clone['port_mode'] = 'preserve' if listen == target else 'custom'
+        additions.append(clone)
+        occupied.add((twin, listen))
+    if additions:
+        rows.extend(additions)
+        return True
+    return False
 
 
 def state():
     cfg = load_json(PORT_CONFIG, default_state())
-    cfg.setdefault('version', 1)
+    cfg.setdefault('version', 2)
     cfg.setdefault('mapping_mode', 'preserve-port')
     cfg.setdefault('mappings', [])
     cfg.setdefault('active_l2tp_exit', None)
+    changed = _upgrade_openvpn_dual_protocol(cfg)
+    if int(cfg.get('version', 1) or 1) < 2:
+        cfg['version'] = 2
+        changed = True
+    if changed:
+        atomic_json(PORT_CONFIG, cfg)
     return cfg
 
 
@@ -70,6 +118,9 @@ def profile(exit_id, cisco_port=8897, openvpn_port=9988, wireguard_port=55821):
          'port_mode': 'preserve', 'enabled': True},
         {'id': f'{exit_id}-openvpn-tcp', 'exit_id': exit_id, 'service': 'openvpn',
          'proto': 'tcp', 'listen_port': openvpn_port, 'target_port': openvpn_port,
+         'port_mode': 'preserve', 'enabled': True},
+        {'id': f'{exit_id}-openvpn-udp', 'exit_id': exit_id, 'service': 'openvpn',
+         'proto': 'udp', 'listen_port': openvpn_port, 'target_port': openvpn_port,
          'port_mode': 'preserve', 'enabled': True},
         {'id': f'{exit_id}-wireguard-udp', 'exit_id': exit_id, 'service': 'wireguard',
          'proto': 'udp', 'listen_port': wireguard_port, 'target_port': wireguard_port,
