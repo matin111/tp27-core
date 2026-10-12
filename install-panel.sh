@@ -95,14 +95,14 @@ choose_plain_port() {
 }
 
 echo "============================================================"
-echo " TP27 PANEL RESILIENT INSTALLER"
+echo " TP27 PANEL MULTI-CORE INSTALLER"
 echo " PANEL IP: $IP"
 echo "============================================================"
 
 export DEBIAN_FRONTEND=noninteractive
 wait_for_apt
 apt-get update
-apt-get install -y python3-venv openssl curl ca-certificates iptables openssh-client sshpass socat jq iproute2 iputils-ping kmod
+apt-get install -y python3-venv openssl curl ca-certificates iptables openssh-client sshpass socat jq iproute2 iputils-ping kmod tar coreutils
 
 install -d -m 755 /opt/tp27-panel /opt/tp27-panel/static /usr/local/lib/tp27
 install -d -m 700 /etc/tp27 /etc/tp27/backups /var/log/tp27/panel-jobs
@@ -114,8 +114,10 @@ curl -fsSL "$RAW/panel/requirements.txt" -o /opt/tp27-panel/requirements.txt
 for f in app.py auth.py provision.py provision_password.py provision_agent.py agent_control.py ports.py portplan.py plain_control.py; do
   curl -fsSL "$RAW/panel/$f" -o "/opt/tp27-panel/$f"
 done
-# Resilient auto transport builder replaces the legacy GRE-only builder at install time.
-curl -fsSL "$RAW/panel/provision_resilient.py" -o /opt/tp27-panel/provision_gre.py
+# Keep the mature GRE/FOU/TLS builder as an internal layer and expose the
+# multi-core wrapper as provision_gre.py so app.py does not need a migration.
+curl -fsSL "$RAW/panel/provision_resilient.py" -o /opt/tp27-panel/provision_resilient.py
+curl -fsSL "$RAW/panel/provision_multicore.py" -o /opt/tp27-panel/provision_gre.py
 
 for f in index.html login.html style.css app.js fast-ui.js agent-manage.js; do
   curl -fsSL "$RAW/panel/static/$f" -o "/opt/tp27-panel/static/$f"
@@ -125,18 +127,34 @@ curl -fsSL "$RAW/systemd/tp27-panel.service" -o "$PANEL_UNIT"
 curl -fsSL "$RAW/systemd/tp27-ports-reconcile.service" -o /etc/systemd/system/tp27-ports-reconcile.service
 curl -fsSL "$RAW/systemd/tp27-plain-control.service" -o /etc/systemd/system/tp27-plain-control.service
 curl -fsSL "$RAW/bin/tp27-link-mtls" -o /usr/local/lib/tp27/tp27-link
+curl -fsSL "$RAW/bin/tp27-link-dispatcher" -o /usr/local/lib/tp27/tp27-link-dispatcher
 curl -fsSL "$RAW/systemd/tp27-link@.service" -o /etc/systemd/system/tp27-link@.service
 curl -fsSL "$RAW/bin/tp27-framed-tls.py" -o /usr/local/lib/tp27/tp27-framed-tls.py
 curl -fsSL "$RAW/systemd/tp27-framed@.service" -o /etc/systemd/system/tp27-framed@.service
-chmod 755 /usr/local/lib/tp27/tp27-link /usr/local/lib/tp27/tp27-framed-tls.py
+curl -fsSL "$RAW/bin/tp27-gost-core.py" -o /usr/local/lib/tp27/tp27-gost-core.py
+curl -fsSL "$RAW/bin/tp27-gost-install.sh" -o /usr/local/lib/tp27/tp27-gost-install.sh
+chmod 755 \
+  /usr/local/lib/tp27/tp27-link \
+  /usr/local/lib/tp27/tp27-link-dispatcher \
+  /usr/local/lib/tp27/tp27-framed-tls.py \
+  /usr/local/lib/tp27/tp27-gost-core.py \
+  /usr/local/lib/tp27/tp27-gost-install.sh
 chmod 600 /opt/tp27-panel/*.py
 
 /opt/tp27-panel/venv/bin/python -m py_compile \
   /opt/tp27-panel/app.py /opt/tp27-panel/auth.py /opt/tp27-panel/provision.py \
   /opt/tp27-panel/provision_password.py /opt/tp27-panel/provision_agent.py \
-  /opt/tp27-panel/provision_gre.py /opt/tp27-panel/agent_control.py \
-  /opt/tp27-panel/plain_control.py /opt/tp27-panel/ports.py /opt/tp27-panel/portplan.py \
-  /usr/local/lib/tp27/tp27-framed-tls.py
+  /opt/tp27-panel/provision_resilient.py /opt/tp27-panel/provision_gre.py \
+  /opt/tp27-panel/agent_control.py /opt/tp27-panel/plain_control.py \
+  /opt/tp27-panel/ports.py /opt/tp27-panel/portplan.py \
+  /usr/local/lib/tp27/tp27-framed-tls.py /usr/local/lib/tp27/tp27-gost-core.py
+
+GOST_STATE="deferred"
+if /usr/local/lib/tp27/tp27-gost-install.sh; then
+  GOST_STATE="ready"
+else
+  echo "WARNING: GOST v3.3.0 download is currently unavailable; builder will retry automatically when selected." >&2
+fi
 
 if [[ ! -s /etc/tp27/agent-enroll.token ]]; then
   python3 - <<'PY'
@@ -234,6 +252,7 @@ fi
 
 echo " Panel: $(systemctl is-active tp27-panel.service || true)"
 echo " Signed control: $(systemctl is-active tp27-plain-control.service 2>/dev/null || true)${PLAIN_PORT:+ · TCP/$PLAIN_PORT}"
-echo " Auto transports: Raw GRE -> GRE/UDP FOU -> Framed TLS/TCP"
+echo " Auto cores: Raw GRE -> GRE/UDP FOU -> GOST/WSS -> Framed TLS/TCP"
+echo " GOST: v3.3.0 ($GOST_STATE)"
 echo " Existing VPN daemons are not restarted by TP27 provisioning"
 echo "============================================================"
