@@ -3,6 +3,7 @@ import argparse
 import asyncio
 import fcntl
 import hashlib
+import ipaddress
 import json
 import os
 import socket
@@ -11,6 +12,7 @@ import struct
 import subprocess
 from pathlib import Path
 
+RUNTIME_VERSION = '1.1.0'
 TUNSETIFF = 0x400454CA
 IFF_TUN = 0x0001
 IFF_NO_PI = 0x1000
@@ -21,6 +23,11 @@ def run_quiet(cmd):
     return subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
 
+def run_capture(cmd):
+    p = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    return p.returncode, (p.stdout or '').strip(), (p.stderr or '').strip()
+
+
 def load_config(path):
     data = json.loads(Path(path).read_text(encoding='utf-8'))
     role = str(data.get('role', '')).strip()
@@ -29,14 +36,25 @@ def load_config(path):
     for key in ('interface', 'tunnel_ip', 'peer_ip'):
         if not data.get(key):
             raise RuntimeError(f'missing {key}')
+
+    tunnel = ipaddress.ip_interface(str(data['tunnel_ip']))
+    peer = ipaddress.ip_address(str(data['peer_ip']))
+    if tunnel.version != 4 or peer.version != 4:
+        raise RuntimeError('framed TLS currently requires IPv4 tunnel addresses')
+    if peer == tunnel.ip:
+        raise RuntimeError('peer_ip must differ from tunnel local IP')
+
     port = int(data.get('listen_port', 0))
     if not 1 <= port <= 65535:
         raise RuntimeError('invalid listen_port')
     mtu = int(data.get('mtu', 1300))
     if not 1000 <= mtu <= 1400:
         raise RuntimeError('invalid mtu')
+
     data['listen_port'] = port
     data['mtu'] = mtu
+    data['_local_ip'] = str(tunnel.ip)
+    data['_peer_ip'] = str(peer)
     return data
 
 
@@ -45,21 +63,52 @@ def make_tun(cfg):
     fd = os.open('/dev/net/tun', os.O_RDWR | os.O_NONBLOCK)
     ifr = struct.pack('16sH', cfg['interface'].encode(), IFF_TUN | IFF_NO_PI)
     fcntl.ioctl(fd, TUNSETIFF, ifr)
-    run_quiet(['ip', 'addr', 'flush', 'dev', cfg['interface']])
+
+    iface = cfg['interface']
+    local_ip = cfg['_local_ip']
+    peer_ip = cfg['_peer_ip']
+
+    run_quiet(['ip', 'addr', 'flush', 'dev', iface])
+    run_quiet(['ip', 'route', 'del', peer_ip + '/32', 'dev', iface])
+
+    # TUN is a point-to-point L3 device.  Configure the /30 pair explicitly as
+    # local/32 <-> peer/32 instead of installing a subnet route.  The legacy
+    # TP27 TUN runtime already used this topology; framed TLS must match it.
     p = subprocess.run(
-        ['ip', 'addr', 'add', cfg['tunnel_ip'], 'dev', cfg['interface']],
+        ['ip', 'addr', 'add', local_ip + '/32', 'peer', peer_ip + '/32', 'dev', iface],
         text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     if p.returncode != 0:
-        raise RuntimeError((p.stderr or p.stdout or 'ip addr add failed').strip())
+        raise RuntimeError((p.stderr or p.stdout or 'ip point-to-point addr add failed').strip())
+
     p = subprocess.run(
-        ['ip', 'link', 'set', 'dev', cfg['interface'], 'mtu', str(cfg['mtu']),
+        ['ip', 'route', 'replace', peer_ip + '/32', 'dev', iface, 'src', local_ip],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if p.returncode != 0:
+        raise RuntimeError((p.stderr or p.stdout or 'peer route install failed').strip())
+
+    p = subprocess.run(
+        ['ip', 'link', 'set', 'dev', iface, 'mtu', str(cfg['mtu']),
          'txqueuelen', '1000', 'up'],
         text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     if p.returncode != 0:
         raise RuntimeError((p.stderr or p.stdout or 'ip link up failed').strip())
-    run_quiet(['sysctl', '-q', '-w', f"net.ipv4.conf.{cfg['interface']}.rp_filter=0"])
+
+    # Keep reverse-path validation from interfering with the point-to-point
+    # tunnel.  These are TP27-local sysctl changes only; no VPN daemon is touched.
+    run_quiet(['sysctl', '-q', '-w', 'net.ipv4.conf.all.rp_filter=0'])
+    run_quiet(['sysctl', '-q', '-w', f'net.ipv4.conf.{iface}.rp_filter=0'])
+
+    _, addr_out, _ = run_capture(['ip', '-br', '-4', 'addr', 'show', 'dev', iface])
+    _, route_out, _ = run_capture(['ip', '-4', 'route', 'show', 'dev', iface])
+    print(
+        f'TP27_FRAMED_TUN_READY version={RUNTIME_VERSION} iface={iface} '
+        f'local={local_ip} peer={peer_ip} mtu={cfg["mtu"]} '
+        f'addr="{addr_out}" route="{route_out}"',
+        flush=True,
+    )
     return fd
 
 
@@ -83,6 +132,7 @@ def tune_socket(writer):
 async def pump(reader, writer, tun_fd):
     loop = asyncio.get_running_loop()
     queue = asyncio.Queue(maxsize=8192)
+    stats = {'tx_packets': 0, 'tx_bytes': 0, 'rx_packets': 0, 'rx_bytes': 0}
 
     def tun_ready():
         try:
@@ -103,6 +153,8 @@ async def pump(reader, writer, tun_fd):
             try:
                 packet = await asyncio.wait_for(queue.get(), timeout=10)
                 writer.write(struct.pack('!I', len(packet)) + packet)
+                stats['tx_packets'] += 1
+                stats['tx_bytes'] += len(packet)
             except asyncio.TimeoutError:
                 writer.write(b'\x00\x00\x00\x00')
             await writer.drain()
@@ -119,12 +171,25 @@ async def pump(reader, writer, tun_fd):
             while True:
                 try:
                     os.write(tun_fd, packet)
+                    stats['rx_packets'] += 1
+                    stats['rx_bytes'] += len(packet)
                     break
                 except BlockingIOError:
                     await asyncio.sleep(0.001)
 
+    async def reporter():
+        while True:
+            await asyncio.sleep(5)
+            print(
+                'TP27_FRAMED_STATS '
+                f'tx_packets={stats["tx_packets"]} tx_bytes={stats["tx_bytes"]} '
+                f'rx_packets={stats["rx_packets"]} rx_bytes={stats["rx_bytes"]}',
+                flush=True,
+            )
+
     tx = asyncio.create_task(sender())
     rx = asyncio.create_task(receiver())
+    report = asyncio.create_task(reporter())
     try:
         done, pending = await asyncio.wait([tx, rx], return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
@@ -133,7 +198,7 @@ async def pump(reader, writer, tun_fd):
             task.result()
     finally:
         loop.remove_reader(tun_fd)
-        for task in (tx, rx):
+        for task in (tx, rx, report):
             if not task.done():
                 task.cancel()
 
@@ -174,8 +239,8 @@ async def server_main(cfg, tun_fd):
         handle, bind_ip, cfg['listen_port'], ssl=context, backlog=128,
     )
     print(
-        f"TP27_FRAMED_READY role=server iface={cfg['interface']} "
-        f"addr={cfg['tunnel_ip']} listen={bind_ip}:{cfg['listen_port']}",
+        f"TP27_FRAMED_READY version={RUNTIME_VERSION} role=server iface={cfg['interface']} "
+        f"addr={cfg['tunnel_ip']} peer={cfg['peer_ip']} listen={bind_ip}:{cfg['listen_port']}",
         flush=True,
     )
     async with server:
@@ -195,8 +260,8 @@ async def client_main(cfg, tun_fd):
     context.verify_mode = ssl.CERT_NONE
 
     print(
-        f"TP27_FRAMED_READY role=client iface={cfg['interface']} addr={cfg['tunnel_ip']} "
-        f"remote={remote}:{cfg['listen_port']}",
+        f"TP27_FRAMED_READY version={RUNTIME_VERSION} role=client iface={cfg['interface']} "
+        f"addr={cfg['tunnel_ip']} peer={cfg['peer_ip']} remote={remote}:{cfg['listen_port']}",
         flush=True,
     )
     failures = 0
