@@ -16,7 +16,7 @@ RAW="${TP27_REPO_RAW:-https://raw.githubusercontent.com/matin111/tp27-core/main}
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y python3-venv ca-certificates curl iproute2 iputils-ping jq openssl
+apt-get install -y python3-venv ca-certificates curl iproute2 iputils-ping jq openssl tar coreutils
 
 REQUESTED_CONTROLLER="$CONTROLLER"
 HOST="$(python3 - "$CONTROLLER" <<'PY'
@@ -104,21 +104,51 @@ python3 -m venv /opt/tp27-exit-agent/venv
 /opt/tp27-exit-agent/venv/bin/pip install --upgrade pip >/dev/null
 /opt/tp27-exit-agent/venv/bin/pip install requests certifi >/dev/null
 
-curl -fsSL "$RAW/agent/tp27-exit-agent.py" -o /opt/tp27-exit-agent/tp27-exit-agent.py
-curl -fsSL "$RAW/agent/tp27-exit-agent-plain.py" -o /opt/tp27-exit-agent/tp27-exit-agent-plain.py
-curl -fsSL "$RAW/systemd/tp27-exit-agent.service" -o /etc/systemd/system/tp27-exit-agent.service
-curl -fsSL "$RAW/systemd/tp27-exit-agent-plain.service" -o /etc/systemd/system/tp27-exit-agent-plain.service
-curl -fsSL "$RAW/bin/tp27-link-mtls" -o /usr/local/lib/tp27/tp27-link
-curl -fsSL "$RAW/systemd/tp27-link@.service" -o /etc/systemd/system/tp27-link@.service
-curl -fsSL "$RAW/bin/tp27-framed-tls.py" -o /usr/local/lib/tp27/tp27-framed-tls.py
-curl -fsSL "$RAW/systemd/tp27-framed@.service" -o /etc/systemd/system/tp27-framed@.service
-chmod 700 /opt/tp27-exit-agent/tp27-exit-agent.py /opt/tp27-exit-agent/tp27-exit-agent-plain.py
-chmod 755 /usr/local/lib/tp27/tp27-link /usr/local/lib/tp27/tp27-framed-tls.py
+fetch() {
+  local src="$1" dst="$2"
+  curl -fsSL --connect-timeout 8 --max-time 90 "$RAW/$src" -o "$dst"
+}
+
+fetch agent/tp27-exit-agent.py /opt/tp27-exit-agent/tp27-exit-agent.py
+fetch agent/tp27-exit-agent-plain.py /opt/tp27-exit-agent/tp27-exit-agent-plain.py
+fetch agent/tp27-exit-agent-multicore.py /opt/tp27-exit-agent/tp27-exit-agent-multicore.py
+fetch agent/tp27_gost_addon.py /opt/tp27-exit-agent/tp27_gost_addon.py
+fetch systemd/tp27-exit-agent.service /etc/systemd/system/tp27-exit-agent.service
+fetch systemd/tp27-exit-agent-plain.service /etc/systemd/system/tp27-exit-agent-plain.service
+fetch bin/tp27-link-mtls /usr/local/lib/tp27/tp27-link
+fetch bin/tp27-link-dispatcher /usr/local/lib/tp27/tp27-link-dispatcher
+fetch systemd/tp27-link@.service /etc/systemd/system/tp27-link@.service
+fetch bin/tp27-framed-tls.py /usr/local/lib/tp27/tp27-framed-tls.py
+fetch systemd/tp27-framed@.service /etc/systemd/system/tp27-framed@.service
+fetch bin/tp27-gost-core.py /usr/local/lib/tp27/tp27-gost-core.py
+fetch bin/tp27-gost-install.sh /usr/local/lib/tp27/tp27-gost-install.sh
+
+chmod 700 \
+  /opt/tp27-exit-agent/tp27-exit-agent.py \
+  /opt/tp27-exit-agent/tp27-exit-agent-plain.py \
+  /opt/tp27-exit-agent/tp27-exit-agent-multicore.py \
+  /opt/tp27-exit-agent/tp27_gost_addon.py
+chmod 755 \
+  /usr/local/lib/tp27/tp27-link \
+  /usr/local/lib/tp27/tp27-link-dispatcher \
+  /usr/local/lib/tp27/tp27-framed-tls.py \
+  /usr/local/lib/tp27/tp27-gost-core.py \
+  /usr/local/lib/tp27/tp27-gost-install.sh
 
 /opt/tp27-exit-agent/venv/bin/python -m py_compile \
   /opt/tp27-exit-agent/tp27-exit-agent.py \
   /opt/tp27-exit-agent/tp27-exit-agent-plain.py \
-  /usr/local/lib/tp27/tp27-framed-tls.py
+  /opt/tp27-exit-agent/tp27-exit-agent-multicore.py \
+  /opt/tp27-exit-agent/tp27_gost_addon.py \
+  /usr/local/lib/tp27/tp27-framed-tls.py \
+  /usr/local/lib/tp27/tp27-gost-core.py
+
+GOST_STATE="deferred"
+if /usr/local/lib/tp27/tp27-gost-install.sh; then
+  GOST_STATE="ready"
+else
+  echo "WARNING: GOST v3.3.0 download is currently unavailable; TP27 will retry automatically when the GOST core is selected." >&2
+fi
 
 if [[ -f /etc/tp27/exit-agent.json ]]; then
   cp -a /etc/tp27/exit-agent.json "/etc/tp27/backups/exit-agent.$(date +%Y%m%d-%H%M%S).json"
@@ -160,7 +190,6 @@ if [[ "$ENROLLED" -ne 1 && -n "$SELECTED_PLAIN" ]]; then
   fi
 fi
 
-# A path may change between probe and enroll. Re-scan signed endpoints once.
 if [[ "$ENROLLED" -ne 1 ]]; then
   for candidate in "${plain_candidates[@]:-}"; do
     if probe_plain "$candidate" && enroll_plain "$candidate"; then
@@ -212,5 +241,7 @@ echo " Transport: $TRANSPORT"
 echo " Agent version: $AGENT_VERSION"
 echo " Service: $SERVICE"
 echo " Config: /etc/tp27/exit-agent.json"
-echo " Runtime: GRE + FOU + Framed TLS/TCP"
+echo " Cores: GRE + FOU + GOST/WSS + Framed TLS"
+echo " GOST: v3.3.0 ($GOST_STATE)"
+echo " Existing VPN daemons: untouched"
 echo "============================================================"
