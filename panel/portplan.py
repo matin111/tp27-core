@@ -8,6 +8,43 @@ def _service_name(value):
     return safe or 'custom'
 
 
+def _expand_openvpn_dual_protocol(mappings):
+    """OpenVPN deployments may listen on TCP or UDP.
+
+    The panel historically created only the protocol selected by the UI, which
+    made UDP-only OpenVPN servers look broken while Cisco kept working. For
+    OpenVPN rows, create the missing TCP/UDP twin with the same Iran/Exit
+    ports. Explicit rows are preserved and never duplicated.
+    """
+    rows = [dict(x) for x in (mappings or [])]
+    keys = {
+        (
+            _service_name(x.get('service')),
+            str(x.get('proto', '')).lower().strip(),
+            int(x.get('listen_port', 0) or 0),
+            int(x.get('target_port', 0) or 0),
+        )
+        for x in rows
+    }
+    additions = []
+    for raw in rows:
+        service = _service_name(raw.get('service'))
+        proto = str(raw.get('proto', '')).lower().strip()
+        if service != 'openvpn' or proto not in {'tcp', 'udp'}:
+            continue
+        twin = 'udp' if proto == 'tcp' else 'tcp'
+        listen = int(raw.get('listen_port', 0) or 0)
+        target = int(raw.get('target_port', 0) or 0)
+        key = (service, twin, listen, target)
+        if key in keys:
+            continue
+        copy = dict(raw)
+        copy['proto'] = twin
+        additions.append(copy)
+        keys.add(key)
+    return rows + additions
+
+
 def validate_plan(mappings, exclude_exit=None):
     cfg = state()
     existing = [m for m in cfg.get('mappings', [])
@@ -15,16 +52,16 @@ def validate_plan(mappings, exclude_exit=None):
     normalized = []
     occupied = {(m.get('proto'), int(m.get('listen_port', 0))): m for m in existing}
 
-    for index, raw in enumerate(mappings or []):
+    for index, raw in enumerate(_expand_openvpn_dual_protocol(mappings), start=1):
         proto = str(raw.get('proto', '')).lower().strip()
         if proto not in {'tcp', 'udp'}:
-            raise ValueError(f'ردیف {index + 1}: پروتکل باید TCP یا UDP باشد')
+            raise ValueError(f'ردیف {index}: پروتکل باید TCP یا UDP باشد')
         listen = int(raw.get('listen_port', 0))
         target = int(raw.get('target_port', 0))
         if not 1 <= listen <= 65535:
-            raise ValueError(f'ردیف {index + 1}: پورت ایران نامعتبر است')
+            raise ValueError(f'ردیف {index}: پورت ایران نامعتبر است')
         if not 1 <= target <= 65535:
-            raise ValueError(f'ردیف {index + 1}: پورت خارج نامعتبر است')
+            raise ValueError(f'ردیف {index}: پورت خارج نامعتبر است')
         service = _service_name(raw.get('service'))
         key = (proto, listen)
         old = occupied.get(key)
