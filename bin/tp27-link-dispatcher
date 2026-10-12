@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ID="${1:?instance id required}"
+CFG="/etc/tp27/exits/${ID}.json"
+[[ -f "$CFG" ]] || { echo "missing $CFG" >&2; exit 1; }
+
+TRANSPORT="$(jq -r '.transport // "gre"' "$CFG")"
+
+case "$TRANSPORT" in
+  gost-wss)
+    exec /usr/local/lib/tp27/tp27-gost-core.py --config "$CFG"
+    ;;
+  *)
+    exec /usr/local/lib/tp27/tp27-link "$ID"
+    ;;
+esac
