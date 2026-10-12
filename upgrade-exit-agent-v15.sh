@@ -43,12 +43,29 @@ chmod 755 /usr/local/lib/tp27/tp27-link /usr/local/lib/tp27/tp27-framed-tls.py
 
 python3 - <<'PY'
 from pathlib import Path
-s=Path('/usr/local/lib/tp27/tp27-framed-tls.py').read_text(encoding='utf-8')
-if "RUNTIME_VERSION = '1.1.0'" not in s:
-    raise SystemExit('ERROR: framed TLS runtime v1.1.0 was not installed')
+import re
+
+p = Path('/usr/local/lib/tp27/tp27-framed-tls.py')
+s = p.read_text(encoding='utf-8')
+
+m = re.search(r"RUNTIME_VERSION\s*=\s*['\"]([0-9]+)\.([0-9]+)\.([0-9]+)['\"]", s)
+if not m:
+    raise SystemExit('ERROR: framed TLS runtime version not found')
+version = tuple(int(x) for x in m.groups())
+if version < (1, 1, 1):
+    raise SystemExit(f'ERROR: framed TLS runtime {version} is older than 1.1.1')
+
 if "'peer', peer_ip + '/32'" not in s:
     raise SystemExit('ERROR: point-to-point TUN fix is missing')
-print('FRAMED_RUNTIME_1_1=OK')
+
+link_pos = s.find("['ip', 'link', 'set', 'dev', iface")
+route_pos = s.find("['ip', 'route', 'replace', peer_ip + '/32'")
+if link_pos < 0 or route_pos < 0 or link_pos > route_pos:
+    raise SystemExit('ERROR: framed runtime must bring TUN up before installing peer route')
+
+print('FRAMED_RUNTIME_VERSION=' + '.'.join(map(str, version)))
+print('FRAMED_RUNTIME_1_1_1_PLUS=OK')
+print('FRAMED_LINK_UP_BEFORE_ROUTE=OK')
 PY
 
 TRANSPORT="$(python3 - <<'PY'
@@ -76,7 +93,8 @@ echo "============================================================"
 echo " TP27 EXIT AGENT UPGRADED"
 echo " Service: $SERVICE"
 echo " Agent: v1.5.0"
-echo " Runtime: GRE + FOU + Framed TLS/TCP v1.1"
+echo " Runtime: GRE + FOU + Framed TLS/TCP v1.1.1+"
 echo " TUN topology: explicit local/32 <-> peer/32"
+echo " TUN order: link UP -> peer route"
 echo " Backup: $BACKUP"
 echo "============================================================"
