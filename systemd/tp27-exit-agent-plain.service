@@ -1,0 +1,22 @@
+[Unit]
+Description=TP27 Exit Agent Signed HTTP
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/tp27-exit-agent/venv/bin/python /opt/tp27-exit-agent/tp27-exit-agent-plain.py --run
+Restart=always
+RestartSec=5
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/etc/tp27 /var/log/tp27 /run /dev/net/tun /opt/tp27-exit-agent
+
+[Install]
+WantedBy=multi-user.target
