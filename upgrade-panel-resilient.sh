@@ -21,6 +21,7 @@ mkdir -p "$BACKUP"
 chmod 700 "$BACKUP"
 
 for f in \
+  /opt/tp27-panel/app.py \
   /opt/tp27-panel/provision_gre.py \
   /usr/local/lib/tp27/tp27-framed-tls.py \
   /etc/systemd/system/tp27-framed@.service \
@@ -35,16 +36,18 @@ fetch() {
 }
 
 install -d -m 755 /usr/local/lib/tp27
+fetch panel/app.py /opt/tp27-panel/app.py
 fetch panel/provision_resilient.py /opt/tp27-panel/provision_gre.py
 fetch bin/tp27-framed-tls.py /usr/local/lib/tp27/tp27-framed-tls.py
 fetch systemd/tp27-framed@.service /etc/systemd/system/tp27-framed@.service
 fetch bin/tp27-link-mtls /usr/local/lib/tp27/tp27-link
 fetch systemd/tp27-link@.service /etc/systemd/system/tp27-link@.service
 
-chmod 600 /opt/tp27-panel/provision_gre.py
+chmod 600 /opt/tp27-panel/app.py /opt/tp27-panel/provision_gre.py
 chmod 755 /usr/local/lib/tp27/tp27-framed-tls.py /usr/local/lib/tp27/tp27-link
 
 /opt/tp27-panel/venv/bin/python -m py_compile \
+  /opt/tp27-panel/app.py \
   /opt/tp27-panel/provision_gre.py \
   /usr/local/lib/tp27/tp27-framed-tls.py
 
@@ -61,19 +64,25 @@ systemctl is-active --quiet tp27-panel.service || {
 
 python3 - <<'PY'
 from pathlib import Path
-p=Path('/opt/tp27-panel/provision_gre.py')
-s=p.read_text(encoding='utf-8')
-checks=['MIN_AGENT_VERSION = (1, 5, 0)', 'Framed TLS', "provision_tls_exit"]
-missing=[x for x in checks if x not in s]
-if missing:
-    raise SystemExit('ERROR: resilient builder validation failed: '+', '.join(missing))
+builder=Path('/opt/tp27-panel/provision_gre.py').read_text(encoding='utf-8')
+app=Path('/opt/tp27-panel/app.py').read_text(encoding='utf-8')
+checks=[
+    ('builder agent v1.5', 'MIN_AGENT_VERSION = (1, 5, 0)' in builder),
+    ('builder framed TLS', 'Framed TLS' in builder and 'provision_tls_exit' in builder),
+    ('transport-aware health', "transport == 'framed-tls'" in app and 'tp27-framed@' in app),
+]
+bad=[name for name,ok in checks if not ok]
+if bad:
+    raise SystemExit('ERROR: validation failed: '+', '.join(bad))
 print('RESILIENT_BUILDER=OK')
+print('TRANSPORT_AWARE_HEALTH=OK')
 PY
 
 echo "============================================================"
 echo " TP27 PANEL RESILIENT UPGRADE READY"
 echo " Panel: active"
 echo " AUTO: Raw GRE -> GRE/UDP FOU -> Framed TLS/TCP"
+echo " Health/Repair: transport-aware"
 echo " Existing tunnel configs: preserved"
 echo " Existing VPN daemons: untouched"
 echo " Backup: $BACKUP"
