@@ -10,7 +10,7 @@ RAW="${TP27_REPO_RAW:-https://raw.githubusercontent.com/matin111/tp27-core/main}
 export DEBIAN_FRONTEND=noninteractive
 
 echo "============================================================"
-echo " TP27 CORE v0.3 GRE FAST"
+echo " TP27 CORE v0.4 RESILIENT TRANSPORT"
 echo " ROLE: $ROLE"
 echo "============================================================"
 
@@ -44,7 +44,11 @@ systemctl disable --now tp27-agent.service 2>/dev/null || true
 curl -fsSL "$RAW/bin/tp27-v2.py" -o /usr/local/lib/tp27/tp27.py
 curl -fsSL "$RAW/bin/tp27-link-mtls" -o /usr/local/lib/tp27/tp27-link
 curl -fsSL "$RAW/systemd/tp27-link@.service" -o /etc/systemd/system/tp27-link@.service
-chmod 755 /usr/local/lib/tp27/tp27.py /usr/local/lib/tp27/tp27-link
+curl -fsSL "$RAW/bin/tp27-framed-tls.py" -o /usr/local/lib/tp27/tp27-framed-tls.py
+curl -fsSL "$RAW/systemd/tp27-framed@.service" -o /etc/systemd/system/tp27-framed@.service
+chmod 755 /usr/local/lib/tp27/tp27.py /usr/local/lib/tp27/tp27-link /usr/local/lib/tp27/tp27-framed-tls.py
+
+python3 -m py_compile /usr/local/lib/tp27/tp27-framed-tls.py
 
 ln -sfn /usr/local/lib/tp27/tp27.py /usr/local/bin/tp27
 rm -f /usr/local/bin/tp27ctl
@@ -62,5 +66,5 @@ systemctl daemon-reload
 tp27 bootstrap --role "$ROLE"
 
 echo
-echo "TP27 v0.3 GRE FAST installed. CLI: tp27"
+echo "TP27 v0.4 installed. Transports: GRE, GRE/UDP FOU, Framed TLS/TCP"
 tp27 status
