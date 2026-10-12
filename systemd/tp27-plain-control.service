@@ -1,0 +1,24 @@
+[Unit]
+Description=TP27 Signed HTTP Control
+After=network-online.target tp27-panel.service
+Wants=network-online.target
+Requires=tp27-panel.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/tp27-panel
+ExecStart=/opt/tp27-panel/venv/bin/python /opt/tp27-panel/plain_control.py --host 0.0.0.0 --port 443
+Restart=always
+RestartSec=3
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/etc/tp27 /var/log/tp27
+
+[Install]
+WantedBy=multi-user.target
