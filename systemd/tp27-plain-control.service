@@ -7,7 +7,9 @@ Requires=tp27-panel.service
 [Service]
 Type=simple
 WorkingDirectory=/opt/tp27-panel
-ExecStart=/opt/tp27-panel/venv/bin/python /opt/tp27-panel/plain_control.py --host 0.0.0.0 --port 443
+Environment=TP27_PLAIN_PORT=443
+EnvironmentFile=-/etc/tp27/plain-control.env
+ExecStart=/opt/tp27-panel/venv/bin/python /opt/tp27-panel/plain_control.py --host 0.0.0.0 --port ${TP27_PLAIN_PORT}
 Restart=always
 RestartSec=3
 User=root
