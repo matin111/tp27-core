@@ -56,13 +56,23 @@ def exit_channels(item: dict):
     return [x for x in rows if x.get('id') or x.get('interface')]
 
 
+def _service_for_row(row: dict):
+    cid = row.get('id', '')
+    transport = str(row.get('transport') or '').strip().lower()
+    mode = str(row.get('mode') or '').strip().lower()
+    if transport == 'framed-tls' or mode == 'framed-tls':
+        return f'tp27-framed@{cid}.service'
+    return f'tp27-link@{cid}.service'
+
+
 def _channel_health(row: dict):
     cid = row.get('id', '')
     iface = row.get('interface', '')
     remote_ip = row.get('remote_ip', '')
+    service_name = _service_for_row(row) if cid else ''
     svc_rc, svc_out, svc_err = run(
-        ['systemctl', 'is-active', f'tp27-link@{cid}.service'], check=False
-    ) if cid else (1, '', '')
+        ['systemctl', 'is-active', service_name], check=False
+    ) if service_name else (1, '', '')
     iface_rc, _, _ = run(['ip', 'link', 'show', iface], check=False) if iface else (1, '', '')
     ping_rc = 1
     if iface and remote_ip:
@@ -72,6 +82,8 @@ def _channel_health(row: dict):
         'interface': iface,
         'remote_ip': remote_ip,
         'port': row.get('port'),
+        'transport': row.get('transport'),
+        'service_name': service_name,
         'service': svc_rc == 0,
         'interface_up': iface_rc == 0,
         'ping': ping_rc == 0,
@@ -87,8 +99,9 @@ def cleanup_local_exit(exit_id: str):
     ids.update(x.get('id') for x in rows if x.get('id'))
 
     for cid in ids:
-        run(['systemctl', 'disable', '--now', f'tp27-link@{cid}.service'], check=False)
-        run(['systemctl', 'reset-failed', f'tp27-link@{cid}.service'], check=False)
+        for svc in (f'tp27-link@{cid}.service', f'tp27-framed@{cid}.service'):
+            run(['systemctl', 'disable', '--now', svc], check=False)
+            run(['systemctl', 'reset-failed', svc], check=False)
         try:
             (EXITS / f'{cid}.json').unlink(missing_ok=True)
         except Exception:
@@ -96,6 +109,7 @@ def cleanup_local_exit(exit_id: str):
         for path in (
             CERTS / f'{cid}.crt', CERTS / f'{cid}.key',
             CERTS / f'{cid}-iran.crt', CERTS / f'{cid}-iran.key',
+            CERTS / f'{cid}-framed.crt', CERTS / f'{cid}-framed.key',
         ):
             try:
                 path.unlink(missing_ok=True)
@@ -125,16 +139,16 @@ async def diagnose_exit_record(item: dict):
     for ch in checks:
         if ch['healthy']:
             continue
-        cid = ch.get('id')
-        if not cid:
+        service_name = ch.get('service_name')
+        if not service_name:
             continue
         _, out, err = run([
-            'journalctl', '-u', f'tp27-link@{cid}.service',
+            'journalctl', '-u', service_name,
             '-n', '12', '--no-pager', '-o', 'cat'
         ], check=False)
         text = (out or err or '').strip()
         if text:
-            logs.append(f'===== {cid} =====\n{text[-1800:]}')
+            logs.append(f'===== {service_name} =====\n{text[-1800:]}')
     local_log = '\n\n'.join(logs)
     if len(local_log) > 5000:
         local_log = local_log[-5000:]
@@ -165,6 +179,7 @@ async def diagnose_exit_record(item: dict):
         'local_log': local_log,
         'remote_status': remote_status,
         'mode': item.get('mode', 'single'),
+        'transport': item.get('transport'),
         'channels_total': total,
         'channels_healthy': healthy_count,
         'channels': checks,
@@ -313,7 +328,8 @@ async def repair_exit(request: Request, exit_id: str):
     local_errors = []
     for row in rows:
         cid = row.get('id') or exit_id
-        rc, out, err = run(['systemctl', 'restart', f'tp27-link@{cid}.service'], check=False)
+        service_name = _service_for_row({**row, 'id': cid})
+        rc, out, err = run(['systemctl', 'restart', service_name], check=False)
         if rc != 0:
             local_errors.append(err or out or f'Restart {cid} ایران ناموفق بود')
 
