@@ -4,7 +4,7 @@ set -Eeuo pipefail
 ROLE="${1:-}"
 EXIT_IP="152.89.253.169"
 IRAN_IP="193.39.9.220"
-PORT="29443"
+PORT="28443"
 PROBE_SECONDS="${TP27_PROBE_SECONDS:-900}"
 EXIT_TUN="t27ovE"
 IRAN_TUN="t27ovI"
@@ -80,12 +80,23 @@ cleanup_old_gost_probe_exit() {
   fi
 }
 
+cleanup_old_openvpn_probe_exit() {
+  local pid=""
+  pid="$(cat /tmp/tp27-openvpn-probe-exit.pid 2>/dev/null || true)"
+  [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
+  pkill -f 'openvpn --config /tmp/tp27-openvpn-probe-exit.conf' 2>/dev/null || true
+  ip link del "$EXIT_TUN" 2>/dev/null || true
+  cleanup_probe_chain
+}
+
 write_probe_key
 STATIC_COMPAT="$(maybe_allow_static_crypto)"
 
 if [[ "$ROLE" == "exit" ]]; then
   ip -4 addr show | grep -qw "$EXIT_IP" || { echo "ERROR: wrong server; expected $EXIT_IP"; exit 4; }
   cleanup_old_gost_probe_exit
+  cleanup_old_openvpn_probe_exit
+  sleep 1
 
   ss -lntH | awk '{print $4}' | grep -qE "(:|\\])${PORT}$" && {
     echo "ERROR: TCP/$PORT is already occupied"
@@ -96,7 +107,6 @@ if [[ "$ROLE" == "exit" ]]; then
   command -v iptables-save >/dev/null 2>&1 && iptables-save >"$BACKUP" || true
 
   if command -v iptables >/dev/null 2>&1; then
-    cleanup_probe_chain
     iptables -w 5 -N "$CHAIN"
     iptables -w 5 -A "$CHAIN" -p tcp -s "$IRAN_IP/32" -d "$EXIT_IP/32" --dport "$PORT" -j ACCEPT
     iptables -w 5 -A "$CHAIN" -j RETURN
@@ -144,8 +154,15 @@ EOF
   echo "VERSION=$(openvpn --version | head -1)"
   echo "IPTABLES_BACKUP=$BACKUP"
   echo "PROBE_SECONDS=$PROBE_SECONDS"
+  echo "PROBE_PORT=$PORT"
   ss -lntp | grep ":$PORT" || true
   ip -br -4 addr show "$EXIT_TUN" 2>/dev/null || true
+  echo "===== LOCAL LISTENER CHECK ====="
+  if timeout 3 bash -c "</dev/tcp/$EXIT_IP/$PORT"; then
+    echo "LOCAL_TCP_${PORT}=OK"
+  else
+    echo "LOCAL_TCP_${PORT}=FAILED"
+  fi
   echo "===== EXIT LOG ====="
   tail -60 "$LOG" || true
   echo "===== READY ====="
