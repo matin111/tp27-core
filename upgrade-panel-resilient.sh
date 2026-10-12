@@ -67,17 +67,26 @@ systemctl is-active --quiet tp27-panel.service || {
 
 python3 - <<'PY'
 from pathlib import Path
+import re
+
 builder=Path('/opt/tp27-panel/provision_gre.py').read_text(encoding='utf-8')
 app=Path('/opt/tp27-panel/app.py').read_text(encoding='utf-8')
 ctl=Path('/opt/tp27-panel/agent_control.py').read_text(encoding='utf-8')
 runtime=Path('/usr/local/lib/tp27/tp27-framed-tls.py').read_text(encoding='utf-8')
+
+m = re.search(r"RUNTIME_VERSION\s*=\s*['\"]([0-9]+)\.([0-9]+)\.([0-9]+)['\"]", runtime)
+runtime_version = tuple(int(x) for x in m.groups()) if m else (0, 0, 0)
+link_pos = runtime.find("['ip', 'link', 'set', 'dev', iface")
+route_pos = runtime.find("['ip', 'route', 'replace', peer_ip + '/32'")
+
 checks=[
     ('builder agent v1.5', 'MIN_AGENT_VERSION = (1, 5, 0)' in builder),
     ('builder framed TLS', 'Framed TLS' in builder and 'provision_tls_exit' in builder),
     ('controller TLS action', "'provision_tls_exit'" in ctl),
     ('transport-aware health', "transport == 'framed-tls'" in app and 'tp27-framed@' in app),
-    ('framed runtime v1.1', "RUNTIME_VERSION = '1.1.0'" in runtime),
+    ('framed runtime v1.1.1+', runtime_version >= (1, 1, 1)),
     ('point-to-point TUN fix', "'peer', peer_ip + '/32'" in runtime),
+    ('link up before route', link_pos >= 0 and route_pos >= 0 and link_pos < route_pos),
 ]
 bad=[name for name,ok in checks if not ok]
 if bad:
@@ -85,7 +94,9 @@ if bad:
 print('RESILIENT_BUILDER=OK')
 print('CONTROLLER_TLS_ACTION=OK')
 print('TRANSPORT_AWARE_HEALTH=OK')
-print('FRAMED_RUNTIME_1_1=OK')
+print('FRAMED_RUNTIME_VERSION=' + '.'.join(map(str, runtime_version)))
+print('FRAMED_RUNTIME_1_1_1_PLUS=OK')
+print('FRAMED_LINK_UP_BEFORE_ROUTE=OK')
 PY
 
 echo "============================================================"
@@ -94,7 +105,8 @@ echo " Panel: active"
 echo " AUTO: Raw GRE -> GRE/UDP FOU -> Framed TLS/TCP"
 echo " Controller: provision_tls_exit allowed"
 echo " Health/Repair: transport-aware"
-echo " Framed runtime: v1.1 point-to-point TUN"
+echo " Framed runtime: v1.1.1+ point-to-point TUN"
+echo " TUN order: link UP -> peer route"
 echo " Existing tunnel configs: preserved"
 echo " Existing VPN daemons: untouched"
 echo " Backup: $BACKUP"
