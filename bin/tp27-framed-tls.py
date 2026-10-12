@@ -12,7 +12,7 @@ import struct
 import subprocess
 from pathlib import Path
 
-RUNTIME_VERSION = '1.1.0'
+RUNTIME_VERSION = '1.1.1'
 TUNSETIFF = 0x400454CA
 IFF_TUN = 0x0001
 IFF_NO_PI = 0x1000
@@ -71,9 +71,7 @@ def make_tun(cfg):
     run_quiet(['ip', 'addr', 'flush', 'dev', iface])
     run_quiet(['ip', 'route', 'del', peer_ip + '/32', 'dev', iface])
 
-    # TUN is a point-to-point L3 device.  Configure the /30 pair explicitly as
-    # local/32 <-> peer/32 instead of installing a subnet route.  The legacy
-    # TP27 TUN runtime already used this topology; framed TLS must match it.
+    # TUN is a point-to-point L3 device. Configure local/32 <-> peer/32.
     p = subprocess.run(
         ['ip', 'addr', 'add', local_ip + '/32', 'peer', peer_ip + '/32', 'dev', iface],
         text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -81,13 +79,9 @@ def make_tun(cfg):
     if p.returncode != 0:
         raise RuntimeError((p.stderr or p.stdout or 'ip point-to-point addr add failed').strip())
 
-    p = subprocess.run(
-        ['ip', 'route', 'replace', peer_ip + '/32', 'dev', iface, 'src', local_ip],
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
-    if p.returncode != 0:
-        raise RuntimeError((p.stderr or p.stdout or 'peer route install failed').strip())
-
+    # The interface must be UP before Linux accepts a route using it as the
+    # nexthop device. Older v1.1.0 installed the peer route first and failed
+    # with: "Device for nexthop is not up."
     p = subprocess.run(
         ['ip', 'link', 'set', 'dev', iface, 'mtu', str(cfg['mtu']),
          'txqueuelen', '1000', 'up'],
@@ -96,8 +90,13 @@ def make_tun(cfg):
     if p.returncode != 0:
         raise RuntimeError((p.stderr or p.stdout or 'ip link up failed').strip())
 
-    # Keep reverse-path validation from interfering with the point-to-point
-    # tunnel.  These are TP27-local sysctl changes only; no VPN daemon is touched.
+    p = subprocess.run(
+        ['ip', 'route', 'replace', peer_ip + '/32', 'dev', iface, 'src', local_ip],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if p.returncode != 0:
+        raise RuntimeError((p.stderr or p.stdout or 'peer route install failed').strip())
+
     run_quiet(['sysctl', '-q', '-w', 'net.ipv4.conf.all.rp_filter=0'])
     run_quiet(['sysctl', '-q', '-w', f'net.ipv4.conf.{iface}.rp_filter=0'])
 
