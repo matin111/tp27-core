@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/opt/tp27-exit-agent/venv/bin/python /opt/tp27-exit-agent/tp27-exit-agent-multicore.py --run
+ExecStart=/bin/sh -c 'if [ -f /opt/tp27-exit-agent/tp27-exit-agent-multicore.py ]; then exec /opt/tp27-exit-agent/venv/bin/python /opt/tp27-exit-agent/tp27-exit-agent-multicore.py --run; else exec /opt/tp27-exit-agent/venv/bin/python /opt/tp27-exit-agent/tp27-exit-agent.py --run; fi'
 Restart=always
 RestartSec=5
 User=root
