@@ -293,7 +293,7 @@ def action_provision_gre_exit(args):
     if transport not in {'gre', 'gre-fou'}:
         raise ValueError('invalid GRE transport')
     fou_port = int(args.get('fou_port') or 0)
-    if transport == 'gre-fou' and not 1024 <= fou_port <= 65535:
+    if transport == 'gre-fou' and not (fou_port == 443 or 1024 <= fou_port <= 65535):
         raise ValueError('invalid FOU port')
 
     refresh_data_plane()
