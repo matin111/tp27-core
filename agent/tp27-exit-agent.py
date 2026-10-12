@@ -14,7 +14,7 @@ from pathlib import Path
 
 import requests
 
-VERSION = '1.5.0'
+VERSION = '1.5.1'
 RAW = os.environ.get('TP27_REPO_RAW', 'https://raw.githubusercontent.com/matin111/tp27-core/main')
 ROOT = Path('/etc/tp27')
 CONFIG = ROOT / 'exit-agent.json'
@@ -95,18 +95,62 @@ def machine_agent_id():
     return 'exit-' + hashlib.sha256(machine.encode()).hexdigest()[:16]
 
 
-def public_ip():
+def _as_ipv4(value):
     try:
-        r = requests.get('https://ifconfig.me/ip', timeout=8)
-        r.raise_for_status()
-        return r.text.strip()
+        addr = ipaddress.ip_address(str(value or '').strip())
+        return str(addr) if addr.version == 4 else ''
     except Exception:
+        return ''
+
+
+def public_ip():
+    # TP27 data-plane provisioning is IPv4-first today.  Do not let a
+    # dual-stack host register an IPv6 address merely because the HTTP
+    # resolver preferred AAAA.  Probe the public address explicitly over
+    # IPv4, validate it, then fall back to the kernel IPv4 route source.
+    if shutil_which('curl'):
+        for url in ('https://ifconfig.me/ip', 'https://api.ipify.org'):
+            try:
+                rc, out, _ = run(
+                    ['curl', '-4', '-fsS', '--max-time', '8', url],
+                    timeout=10, check=False,
+                )
+                if rc == 0:
+                    addr = _as_ipv4(out)
+                    if addr:
+                        return addr
+            except Exception:
+                pass
+
+    try:
+        _, out, _ = run(['ip', '-4', 'route', 'get', '1.1.1.1'], timeout=5)
+        m = re.search(r'\bsrc\s+(\d+\.\d+\.\d+\.\d+)', out)
+        addr = _as_ipv4(m.group(1) if m else '')
+        if addr:
+            return addr
+    except Exception:
+        pass
+
+    # Last fallback for minimal systems without curl.  Validate the result
+    # so an IPv6 response can never be stored as the exit's public IPv4.
+    for url in ('https://ifconfig.me/ip', 'https://api.ipify.org'):
         try:
-            _, out, _ = run(['ip', '-4', 'route', 'get', '1.1.1.1'], timeout=5)
-            m = re.search(r'\bsrc\s+(\d+\.\d+\.\d+\.\d+)', out)
-            return m.group(1) if m else ''
+            r = requests.get(url, timeout=8)
+            r.raise_for_status()
+            addr = _as_ipv4(r.text)
+            if addr:
+                return addr
         except Exception:
-            return ''
+            pass
+    return ''
+
+
+def shutil_which(name):
+    for directory in os.environ.get('PATH', '/usr/sbin:/usr/bin:/sbin:/bin').split(':'):
+        path = Path(directory) / name
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+    return None
 
 
 def api_url(cfg, path):
