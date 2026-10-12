@@ -5,6 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+ExecStartPre=/bin/sh -c 'if [ -x /usr/local/lib/tp27/tp27-link-preflight ]; then exec /usr/local/lib/tp27/tp27-link-preflight "%i"; fi'
 ExecStart=/usr/local/lib/tp27/tp27-link-dispatcher %i
 Restart=always
 RestartSec=2
