@@ -25,7 +25,8 @@ EOF
 if [[ "$ACTION" == "agent" ]]; then
   CONTROLLER="${2:-}"
   TOKEN="${3:-}"
-  shift 3 || true
+  [[ -n "$CONTROLLER" && -n "$TOKEN" ]] || { usage; exit 2; }
+  shift 3
   MODE=""
   PLAIN_URL=""
   while [[ $# -gt 0 ]]; do
@@ -39,7 +40,6 @@ if [[ "$ACTION" == "agent" ]]; then
         echo "ERROR: unknown agent option: $1"; usage; exit 2 ;;
     esac
   done
-  [[ -n "$CONTROLLER" && -n "$TOKEN" ]] || { usage; exit 2; }
   TMP="$(mktemp /tmp/tp27-exit-agent-install.XXXXXX.sh)"
   trap 'rm -f "$TMP"' EXIT
   curl -fsSL "$RAW/install-exit-agent.sh" -o "$TMP"
@@ -52,6 +52,7 @@ ROLE="$ACTION"
 [[ "$ROLE" == "iran" || "$ROLE" == "exit" ]] || { usage; exit 2; }
 
 wait_for_apt() {
+  command -v fuser >/dev/null 2>&1 || return 0
   for _ in $(seq 1 90); do
     if ! fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
       return 0
