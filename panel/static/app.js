@@ -1,5 +1,7 @@
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const ACTIVE_JOB_KEY='tp27_active_job';
 let agents=[];
 let currentStatus={exits:[]};
 let wizardBaseline=new Set();
@@ -9,11 +11,31 @@ let activeTunnelId=null;
 let managedTunnelId=null;
 
 async function api(url,opt={}){
-  const r=await fetch(url,{credentials:'same-origin',headers:{'Content-Type':'application/json',...(opt.headers||{})},...opt});
-  const type=r.headers.get('content-type')||'';
-  const body=type.includes('application/json')?await r.json():{detail:await r.text()};
-  if(!r.ok)throw new Error(body.detail||body.error||'خطا');
-  return body;
+  const method=String(opt.method||'GET').toUpperCase();
+  const attempts=method==='GET'?4:1;
+  let lastError=null;
+  for(let attempt=1;attempt<=attempts;attempt++){
+    try{
+      const r=await fetch(url,{credentials:'same-origin',headers:{'Content-Type':'application/json',...(opt.headers||{})},...opt});
+      const type=r.headers.get('content-type')||'';
+      const body=type.includes('application/json')?await r.json():{detail:await r.text()};
+      if(!r.ok){
+        const err=new Error(body.detail||body.error||'خطا');
+        err.status=r.status;
+        err.http=true;
+        throw err;
+      }
+      return body;
+    }catch(e){
+      lastError=e;
+      if(e&&e.http)throw e;
+      if(attempt>=attempts)break;
+      await sleep(500*attempt);
+    }
+  }
+  const err=new Error(lastError&&lastError.message&&lastError.message!=='Failed to fetch'?lastError.message:'ارتباط موقت با پنل برقرار نشد');
+  err.network=true;
+  throw err;
 }
 
 function mappingBadges(items=[]){
@@ -156,17 +178,41 @@ async function addExit(){
     await runPreflight(false);
     j.textContent='در حال ساخت تونل...';
     const r=await api('/api/exits',{method:'POST',body:JSON.stringify(payload())});
-    pollJob(r.job_id);
+    localStorage.setItem(ACTIVE_JOB_KEY,r.job_id);
+    pollJob(r.job_id,0);
   }catch(e){j.textContent='خطا: '+e.message}
 }
 
-async function pollJob(id){
+async function pollJob(id,failures=0){
   try{
-    const r=await api('/api/jobs/'+id);
+    const r=await api('/api/jobs/'+encodeURIComponent(id));
     $('job').innerHTML='<b>'+esc(r.state)+'</b><br>'+r.messages.map(x=>esc(x.text)).join('<br>');
-    if(r.state==='done'||r.state==='failed'){refreshAll();return}
-    setTimeout(()=>pollJob(id),1500);
-  }catch(e){$('job').textContent=e.message}
+    if(r.state==='done'||r.state==='failed'){
+      localStorage.removeItem(ACTIVE_JOB_KEY);
+      refreshAll();
+      return;
+    }
+    setTimeout(()=>pollJob(id,0),1500);
+  }catch(e){
+    if(e&&e.status===404){
+      localStorage.removeItem(ACTIVE_JOB_KEY);
+      $('job').textContent='Job قبلی دیگر روی سرور وجود ندارد؛ وضعیت تونل را بررسی کنید.';
+      refreshAll();
+      return;
+    }
+    if(e&&e.status===401){
+      localStorage.removeItem(ACTIVE_JOB_KEY);
+      $('job').textContent='نشست پنل منقضی شده است؛ دوباره وارد شوید.';
+      return;
+    }
+    const next=failures+1;
+    if(next>=20){
+      $('job').textContent='ارتباط با پنل ناپایدار است؛ وضعیت Job محفوظ ماند. صفحه را Refresh کنید تا پیگیری ادامه پیدا کند.';
+      return;
+    }
+    $('job').textContent=`ارتباط موقت با پنل قطع شد؛ تلاش مجدد ${next}/20 ...`;
+    setTimeout(()=>pollJob(id,next),Math.min(5000,1000+next*300));
+  }
 }
 
 function tunnelById(id){return (currentStatus.exits||[]).find(x=>x.id===id)||null}
@@ -345,4 +391,6 @@ async function refreshAll(){await Promise.all([loadStatus(),loadAgents()])}
 
 standardPorts();
 refreshAll();
+const savedJobId=localStorage.getItem(ACTIVE_JOB_KEY);
+if(savedJobId)pollJob(savedJobId,0);
 setInterval(refreshAll,10000);
