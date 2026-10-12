@@ -39,23 +39,40 @@ def save(c):
     os.chmod(t, 0o600)
     os.replace(t, CONFIG)
 
+def _valid_ipv4(value):
+    try:
+        addr = ipaddress.ip_address(str(value or '').strip())
+        return str(addr) if addr.version == 4 else ''
+    except Exception:
+        return ''
+
 def public_ip():
     try:
-        return run(['curl','-4','-fsS','--max-time','5','https://ifconfig.me'])
+        value = run(['curl','-4','-fsS','--max-time','5','https://ifconfig.me/ip'])
+        value = _valid_ipv4(value)
+        if value:
+            return value
     except Exception:
-        out = run(['ip','-4','route','get','1.1.1.1'])
-        m = re.search(r'\bsrc\s+(\d+\.\d+\.\d+\.\d+)', out)
-        return m.group(1) if m else ''
+        pass
+    out = run(['ip','-4','route','get','1.1.1.1'])
+    m = re.search(r'\bsrc\s+(\d+\.\d+\.\d+\.\d+)', out)
+    return _valid_ipv4(m.group(1) if m else '')
 
 def bootstrap(a):
     root()
     c = load()
-    if c.get('version') != 2:
-        c = {'version':2,'role':a.role,'node_id':socket.gethostname(),'public_ip':public_ip(),'exits':[]}
-    else:
-        c['role'] = a.role
-        c.setdefault('public_ip', public_ip())
-        c.setdefault('exits', [])
+    if not isinstance(c, dict):
+        c = {}
+    # Upgrade in place. Never replace the whole state simply because an older
+    # or newer version marker is present; doing so could wipe configured exits.
+    c['version'] = 2
+    c['role'] = a.role
+    c.setdefault('node_id', socket.gethostname())
+    current_ip = _valid_ipv4(c.get('public_ip'))
+    if not current_ip:
+        current_ip = public_ip()
+    c['public_ip'] = current_ip
+    c.setdefault('exits', [])
     save(c)
     print(f"TP27 v0.2 role={a.role} public_ip={c.get('public_ip')}")
 
