@@ -195,22 +195,35 @@ def add_exit(a):
         raise SystemExit(3)
     print(f"ONLINE: {eid} {local_ip} <-> {rec['remote_ip']} via mTLS/TCP {a.endpoint}:{port}")
 
+def _service_for_record(e):
+    transport = str(e.get('transport') or '').lower()
+    if transport == 'framed-tls':
+        return f"tp27-framed@{e.get('id','')}.service"
+    return f"tp27-link@{e.get('id','')}.service"
+
 def status(a):
     c = load()
     print(f"TP27 v{c.get('version','?')} role={c.get('role','unconfigured')} public_ip={c.get('public_ip','')}")
     if c.get('role') == 'iran':
         for e in c.get('exits', []):
-            svc = f"tp27-link@{e['id']}.service"
+            svc = _service_for_record(e)
             active = subprocess.run(['systemctl','is-active','--quiet',svc]).returncode == 0
-            peer = e['remote_ip']
-            ping = subprocess.run(['ping','-c','1','-W','1',peer], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
-            print(f"{e['id']:10} {'ONLINE' if active and ping else 'DEGRADED':9} iface={e['interface']} peer={peer} endpoint={e['endpoint']}:{e['port']}")
+            peer = str(e.get('remote_ip') or e.get('peer_ip') or '')
+            ping = False
+            if peer:
+                ping = subprocess.run(['ping','-c','1','-W','1',peer], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+            endpoint = e.get('endpoint') or e.get('public_remote') or '-'
+            port = e.get('port') or e.get('fou_port') or '-'
+            print(f"{str(e.get('id','')):10} {'ONLINE' if active and ping else 'DEGRADED':9} iface={e.get('interface','-')} peer={peer or '-'} endpoint={endpoint}:{port}")
     else:
         for p in sorted(EXITS.glob('*.json')):
             e = json.loads(p.read_text())
-            svc = f"tp27-link@{e['id']}.service"
+            svc = _service_for_record(e)
             active = subprocess.run(['systemctl','is-active','--quiet',svc]).returncode == 0
-            print(f"{e['id']:10} {'LISTENING' if active else 'DOWN':9} iface={e['interface']} port={e['listen_port']}")
+            transport = e.get('transport') or e.get('mode') or e.get('role') or '-'
+            port = e.get('listen_port') or e.get('fou_port') or '-'
+            peer = e.get('peer_ip') or '-'
+            print(f"{str(e.get('id',p.stem)):10} {'ACTIVE' if active else 'DOWN':9} iface={e.get('interface','-')} transport={transport} peer={peer} port={port}")
 
 def doctor(a):
     checks = [('config',CONFIG.exists(),str(CONFIG)),('socat',shutil.which('socat') is not None,shutil.which('socat') or ''),('openssl',shutil.which('openssl') is not None,shutil.which('openssl') or ''),('ip_forward',run(['sysctl','-n','net.ipv4.ip_forward'],check=False) == '1','')]
