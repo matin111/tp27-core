@@ -5,6 +5,7 @@ ROLE="${1:-}"
 EXIT_IP="152.89.253.169"
 IRAN_IP="193.39.9.220"
 PORT="29443"
+PROBE_SECONDS="${TP27_PROBE_SECONDS:-900}"
 EXIT_TUN="t27ovE"
 IRAN_TUN="t27ovI"
 EXIT_TUN_IP="10.254.252.1"
@@ -15,6 +16,10 @@ CHAIN="TP27_OVPN_PROBE"
 [[ "$EUID" -eq 0 ]] || { echo "ERROR: run as root"; exit 1; }
 [[ "$ROLE" == "exit" || "$ROLE" == "iran" ]] || {
   echo "Usage: $0 {exit|iran}"
+  exit 2
+}
+[[ "$PROBE_SECONDS" =~ ^[0-9]+$ ]] && (( PROBE_SECONDS >= 60 && PROBE_SECONDS <= 3600 )) || {
+  echo "ERROR: TP27_PROBE_SECONDS must be 60..3600"
   exit 2
 }
 command -v openvpn >/dev/null 2>&1 || {
@@ -124,11 +129,11 @@ $STATIC_COMPAT
 EOF
 
   rm -f "$LOG"
-  nohup timeout 180 openvpn --config "$CONF" >"$LOG" 2>&1 &
+  nohup timeout "$PROBE_SECONDS" openvpn --config "$CONF" >"$LOG" 2>&1 &
   echo $! >"$PIDFILE"
 
   (
-    sleep 185
+    sleep "$((PROBE_SECONDS + 5))"
     cleanup_probe_chain
     ip link del "$EXIT_TUN" 2>/dev/null || true
     rm -f "$CONF" "$KEY" "$PIDFILE"
@@ -138,12 +143,13 @@ EOF
   echo "===== OPENVPN EXIT PROBE ====="
   echo "VERSION=$(openvpn --version | head -1)"
   echo "IPTABLES_BACKUP=$BACKUP"
+  echo "PROBE_SECONDS=$PROBE_SECONDS"
   ss -lntp | grep ":$PORT" || true
   ip -br -4 addr show "$EXIT_TUN" 2>/dev/null || true
   echo "===== EXIT LOG ====="
   tail -60 "$LOG" || true
   echo "===== READY ====="
-  echo "Run the same pinned script with argument 'iran' on $IRAN_IP within 180 seconds."
+  echo "Run the same pinned script with argument 'iran' on $IRAN_IP within $PROBE_SECONDS seconds."
   exit 0
 fi
 
