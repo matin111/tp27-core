@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+import ipaddress
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path('/etc/tp27')
+EXITS = ROOT / 'exits'
+CORE_CONFIG = ROOT / 'config.json'
+
+
+def run(cmd, check=False):
+    p = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if check and p.returncode != 0:
+        raise RuntimeError((p.stderr or p.stdout or 'command failed').strip())
+    return p.returncode, (p.stdout or '').strip(), (p.stderr or '').strip()
+
+
+def load_json(path, default):
+    try:
+        return json.loads(Path(path).read_text(encoding='utf-8'))
+    except Exception:
+        return default
+
+
+def tp27_iface(name):
+    return bool(name) and (name.startswith('t27') or name.startswith('tp27'))
+
+
+def core_ifaces():
+    out = set()
+    data = load_json(CORE_CONFIG, {'exits': []})
+    for item in data.get('exits', []):
+        rows = item.get('channels') or [item]
+        for row in rows:
+            iface = str(row.get('interface') or '').split('@', 1)[0]
+            if tp27_iface(iface):
+                out.add(iface)
+    return out
+
+
+def config_by_iface():
+    out = {}
+    if not EXITS.exists():
+        return out
+    for path in EXITS.glob('*.json'):
+        data = load_json(path, {})
+        iface = str(data.get('interface') or '').split('@', 1)[0]
+        eid = str(data.get('id') or path.stem)
+        if tp27_iface(iface):
+            out.setdefault(iface, set()).add(eid)
+    return out
+
+
+def live_tp27_networks():
+    rc, stdout, _ = run(['ip', '-o', '-4', 'addr', 'show'])
+    if rc != 0:
+        return []
+    rows = []
+    for line in stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 4 or parts[2] != 'inet':
+            continue
+        iface = parts[1].split('@', 1)[0]
+        if not tp27_iface(iface):
+            continue
+        try:
+            network = ipaddress.ip_interface(parts[3]).network
+        except Exception:
+            continue
+        rows.append((iface, network, parts[3]))
+    return rows
+
+
+def stop_orphan_services(eids):
+    for eid in sorted(eids):
+        for unit in (f'tp27-link@{eid}.service', f'tp27-framed@{eid}.service'):
+            run(['systemctl', 'disable', '--now', unit])
+            run(['systemctl', 'reset-failed', unit])
+
+
+def main():
+    if os.geteuid() != 0:
+        raise SystemExit('tp27-link-preflight requires root')
+    if len(sys.argv) != 2:
+        raise SystemExit('usage: tp27-link-preflight <id>')
+
+    eid = sys.argv[1]
+    cfg_path = EXITS / f'{eid}.json'
+    cfg = load_json(cfg_path, None)
+    if not isinstance(cfg, dict):
+        raise SystemExit(f'missing or invalid {cfg_path}')
+
+    iface = str(cfg.get('interface') or '').split('@', 1)[0]
+    tunnel_ip = str(cfg.get('tunnel_ip') or '').strip()
+    if not tp27_iface(iface):
+        raise SystemExit(f'invalid TP27 interface: {iface!r}')
+    try:
+        desired = ipaddress.ip_interface(tunnel_ip).network
+    except Exception as exc:
+        raise SystemExit(f'invalid tunnel_ip {tunnel_ip!r}: {exc}')
+
+    active = core_ifaces()
+    owners = config_by_iface()
+    collisions = []
+    for other, network, cidr in live_tp27_networks():
+        if other == iface:
+            continue
+        if network.overlaps(desired):
+            collisions.append((other, network, cidr))
+
+    for other, network, cidr in collisions:
+        if other in active:
+            print(
+                f'TP27_PREFLIGHT_COLLISION desired={desired} iface={iface} '
+                f'active_iface={other} active_addr={cidr}',
+                file=sys.stderr,
+            )
+            raise SystemExit(20)
+
+        stale_ids = owners.get(other, set())
+        if stale_ids:
+            stop_orphan_services(stale_ids)
+        rc, _, err = run(['ip', 'link', 'del', other])
+        if rc != 0 and Path(f'/sys/class/net/{other}').exists():
+            print(f'failed to delete stale TP27 interface {other}: {err}', file=sys.stderr)
+            raise SystemExit(21)
+        print(
+            f'TP27_PREFLIGHT_STALE_REMOVED iface={other} network={network} '
+            f'owners={",".join(sorted(stale_ids)) or "none"}',
+            file=sys.stderr,
+        )
+
+    remaining = []
+    for other, network, cidr in live_tp27_networks():
+        if other != iface and network.overlaps(desired):
+            remaining.append(f'{other}:{cidr}')
+    if remaining:
+        print(
+            'TP27_PREFLIGHT_COLLISION_REMAINS desired=' + str(desired) +
+            ' conflicts=' + ','.join(remaining),
+            file=sys.stderr,
+        )
+        raise SystemExit(22)
+
+    print(f'TP27_PREFLIGHT_OK id={eid} iface={iface} network={desired}', file=sys.stderr)
+
+
+if __name__ == '__main__':
+    main()
