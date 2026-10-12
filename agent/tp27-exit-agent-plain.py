@@ -14,29 +14,38 @@ from pathlib import Path
 
 import requests
 
-PLAIN_VERSION = '1.1.0'
+PLAIN_VERSION = '1.2.0'
 BASE_AGENT = Path('/opt/tp27-exit-agent/tp27-exit-agent.py')
+GOST_ADDON = Path('/opt/tp27-exit-agent/tp27_gost_addon.py')
 CONFIG = Path('/etc/tp27/exit-agent.json')
 SAFE_ACTIONS = {
     'status',
     'provision_gre_exit',
     'provision_tls_exit',
+    'provision_gost_exit',
     'restart_link',
     'delete_exit',
     'upgrade_agent',
 }
 
 
-def load_base():
-    spec = importlib.util.spec_from_file_location('tp27_exit_agent_base', BASE_AGENT)
+def load_module(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
-        raise RuntimeError('cannot load base TP27 exit agent')
+        raise RuntimeError('cannot load ' + str(path))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
+def load_base():
+    return load_module(BASE_AGENT, 'tp27_exit_agent_base')
+
+
 BASE = load_base()
+if GOST_ADDON.exists():
+    GOST = load_module(GOST_ADDON, 'tp27_gost_addon_plain')
+    GOST.install(BASE)
 BASE_VERSION = getattr(BASE, 'VERSION', 'unknown')
 
 
