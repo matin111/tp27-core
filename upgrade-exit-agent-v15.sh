@@ -16,7 +16,9 @@ for f in \
   /etc/systemd/system/tp27-exit-agent.service \
   /etc/systemd/system/tp27-exit-agent-plain.service \
   /usr/local/lib/tp27/tp27-link \
-  /etc/systemd/system/tp27-link@.service; do
+  /etc/systemd/system/tp27-link@.service \
+  /usr/local/lib/tp27/tp27-framed-tls.py \
+  /etc/systemd/system/tp27-framed@.service; do
   [[ -f "$f" ]] && cp -a "$f" "$BACKUP/"
 done
 
@@ -38,6 +40,16 @@ chmod 755 /usr/local/lib/tp27/tp27-link /usr/local/lib/tp27/tp27-framed-tls.py
   /opt/tp27-exit-agent/tp27-exit-agent.py \
   /opt/tp27-exit-agent/tp27-exit-agent-plain.py \
   /usr/local/lib/tp27/tp27-framed-tls.py
+
+python3 - <<'PY'
+from pathlib import Path
+s=Path('/usr/local/lib/tp27/tp27-framed-tls.py').read_text(encoding='utf-8')
+if "RUNTIME_VERSION = '1.1.0'" not in s:
+    raise SystemExit('ERROR: framed TLS runtime v1.1.0 was not installed')
+if "'peer', peer_ip + '/32'" not in s:
+    raise SystemExit('ERROR: point-to-point TUN fix is missing')
+print('FRAMED_RUNTIME_1_1=OK')
+PY
 
 TRANSPORT="$(python3 - <<'PY'
 import json
@@ -64,6 +76,7 @@ echo "============================================================"
 echo " TP27 EXIT AGENT UPGRADED"
 echo " Service: $SERVICE"
 echo " Agent: v1.5.0"
-echo " Runtime: GRE + FOU + Framed TLS/TCP"
+echo " Runtime: GRE + FOU + Framed TLS/TCP v1.1"
+echo " TUN topology: explicit local/32 <-> peer/32"
 echo " Backup: $BACKUP"
 echo "============================================================"
