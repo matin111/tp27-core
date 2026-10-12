@@ -38,20 +38,8 @@ if [[ -n "$REQUESTED_IP" ]]; then
   valid_ip "$REQUESTED_IP" || { echo "ERROR: invalid IP: $REQUESTED_IP"; exit 3; }
   IP="$REQUESTED_IP"
 else
-  DETECTED_IP="$(detect_ip || true)"
-  [[ -n "$DETECTED_IP" ]] || { echo "ERROR: could not detect server IP; run: install-panel.sh <IP>"; exit 3; }
-  IP="$DETECTED_IP"
-  if [[ -r /dev/tty && -w /dev/tty ]]; then
-    echo
-    echo "Detected server IP: $DETECTED_IP"
-    printf 'Panel IP [%s]: ' "$DETECTED_IP" >/dev/tty
-    INPUT_IP=""
-    IFS= read -r INPUT_IP </dev/tty || true
-    if [[ -n "$INPUT_IP" ]]; then
-      valid_ip "$INPUT_IP" || { echo "ERROR: invalid IP: $INPUT_IP"; exit 3; }
-      IP="$INPUT_IP"
-    fi
-  fi
+  IP="$(detect_ip || true)"
+  [[ -n "$IP" ]] || { echo "ERROR: could not detect server IP; run: install-panel.sh <IP>"; exit 3; }
 fi
 
 LIVE="/etc/letsencrypt/live/$IP"
@@ -61,9 +49,7 @@ valid_existing_cert() {
   command -v openssl >/dev/null 2>&1 || return 1
   [[ -s "$LIVE/fullchain.pem" && -s "$LIVE/privkey.pem" ]] || return 1
   openssl x509 -in "$LIVE/fullchain.pem" -noout -checkend 300 >/dev/null 2>&1 || return 1
-  openssl x509 -in "$LIVE/fullchain.pem" -noout -ext subjectAltName 2>/dev/null \
-    | grep -Fq "IP Address:$IP" || return 1
-  return 0
+  openssl x509 -in "$LIVE/fullchain.pem" -noout -ext subjectAltName 2>/dev/null | grep -Fq "IP Address:$IP"
 }
 
 patch_panel_cert() {
@@ -71,9 +57,7 @@ patch_panel_cert() {
   python3 - "$PANEL_UNIT" "$key" "$crt" <<'PY'
 from pathlib import Path
 import re, sys
-p=Path(sys.argv[1])
-key=sys.argv[2]
-crt=sys.argv[3]
+p=Path(sys.argv[1]); key=sys.argv[2]; crt=sys.argv[3]
 s=p.read_text()
 new=re.sub(r'--ssl-keyfile\s+\S+\s+--ssl-certfile\s+\S+', f'--ssl-keyfile {key} --ssl-certfile {crt}', s)
 if new == s and '--ssl-keyfile' not in s:
@@ -84,18 +68,34 @@ PY
 
 wait_for_apt() {
   for _ in $(seq 1 60); do
-    if ! fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
-      return 0
-    fi
-    echo "Waiting for apt lock..."
-    sleep 2
+    if ! fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then return 0; fi
+    echo "Waiting for apt lock..."; sleep 2
   done
-  echo "ERROR: apt remained busy for too long"
+  echo "ERROR: apt remained busy for too long"; return 1
+}
+
+choose_plain_port() {
+  local preferred=""
+  if [[ -f /etc/tp27/plain-control.env ]]; then
+    preferred="$(awk -F= '$1=="TP27_PLAIN_PORT"{print $2}' /etc/tp27/plain-control.env | tail -1)"
+  fi
+  systemctl stop tp27-plain-control.service 2>/dev/null || true
+  local candidates=()
+  [[ "$preferred" =~ ^[0-9]+$ ]] && candidates+=("$preferred")
+  candidates+=(443 80 8080 2053 2083 8443 10443)
+  local p seen=" "
+  for p in "${candidates[@]}"; do
+    [[ "$seen" == *" $p "* ]] && continue
+    seen+="$p "
+    if ! ss -lntp | awk -v port=":$p" '$4 ~ port"$" {found=1} END{exit !found}'; then
+      echo "$p"; return 0
+    fi
+  done
   return 1
 }
 
 echo "============================================================"
-echo " TP27 PANEL INSTALLER"
+echo " TP27 PANEL RESILIENT INSTALLER"
 echo " PANEL IP: $IP"
 echo "============================================================"
 
@@ -105,44 +105,44 @@ apt-get update
 apt-get install -y python3-venv openssl curl ca-certificates iptables openssh-client sshpass socat jq iproute2 iputils-ping kmod
 
 install -d -m 755 /opt/tp27-panel /opt/tp27-panel/static /usr/local/lib/tp27
-install -d -m 700 /etc/tp27 /var/log/tp27/panel-jobs
+install -d -m 700 /etc/tp27 /etc/tp27/backups /var/log/tp27/panel-jobs
 python3 -m venv /opt/tp27-panel/venv
 /opt/tp27-panel/venv/bin/pip install --upgrade pip >/dev/null
 curl -fsSL "$RAW/panel/requirements.txt" -o /opt/tp27-panel/requirements.txt
-/opt/tp27-panel/venv/bin/pip install -r /opt/tp27-panel/requirements.txt
+/opt/tp27-panel/venv/bin/pip install -r /opt/tp27-panel/requirements.txt >/dev/null
 
-for f in app.py auth.py provision.py provision_password.py provision_agent.py provision_gre.py agent_control.py ports.py portplan.py; do
+for f in app.py auth.py provision.py provision_password.py provision_agent.py agent_control.py ports.py portplan.py plain_control.py; do
   curl -fsSL "$RAW/panel/$f" -o "/opt/tp27-panel/$f"
 done
+# Resilient auto transport builder replaces the legacy GRE-only builder at install time.
+curl -fsSL "$RAW/panel/provision_resilient.py" -o /opt/tp27-panel/provision_gre.py
+
 for f in index.html login.html style.css app.js fast-ui.js agent-manage.js; do
   curl -fsSL "$RAW/panel/static/$f" -o "/opt/tp27-panel/static/$f"
 done
+
 curl -fsSL "$RAW/systemd/tp27-panel.service" -o "$PANEL_UNIT"
 curl -fsSL "$RAW/systemd/tp27-ports-reconcile.service" -o /etc/systemd/system/tp27-ports-reconcile.service
-
+curl -fsSL "$RAW/systemd/tp27-plain-control.service" -o /etc/systemd/system/tp27-plain-control.service
 curl -fsSL "$RAW/bin/tp27-link-mtls" -o /usr/local/lib/tp27/tp27-link
 curl -fsSL "$RAW/systemd/tp27-link@.service" -o /etc/systemd/system/tp27-link@.service
-chmod 755 /usr/local/lib/tp27/tp27-link
+curl -fsSL "$RAW/bin/tp27-framed-tls.py" -o /usr/local/lib/tp27/tp27-framed-tls.py
+curl -fsSL "$RAW/systemd/tp27-framed@.service" -o /etc/systemd/system/tp27-framed@.service
+chmod 755 /usr/local/lib/tp27/tp27-link /usr/local/lib/tp27/tp27-framed-tls.py
 chmod 600 /opt/tp27-panel/*.py
 
 /opt/tp27-panel/venv/bin/python -m py_compile \
-  /opt/tp27-panel/app.py \
-  /opt/tp27-panel/auth.py \
-  /opt/tp27-panel/provision.py \
-  /opt/tp27-panel/provision_password.py \
-  /opt/tp27-panel/provision_agent.py \
-  /opt/tp27-panel/provision_gre.py \
-  /opt/tp27-panel/agent_control.py \
-  /opt/tp27-panel/ports.py \
-  /opt/tp27-panel/portplan.py
+  /opt/tp27-panel/app.py /opt/tp27-panel/auth.py /opt/tp27-panel/provision.py \
+  /opt/tp27-panel/provision_password.py /opt/tp27-panel/provision_agent.py \
+  /opt/tp27-panel/provision_gre.py /opt/tp27-panel/agent_control.py \
+  /opt/tp27-panel/plain_control.py /opt/tp27-panel/ports.py /opt/tp27-panel/portplan.py \
+  /usr/local/lib/tp27/tp27-framed-tls.py
 
 if [[ ! -s /etc/tp27/agent-enroll.token ]]; then
   python3 - <<'PY'
 import secrets
 from pathlib import Path
-p=Path('/etc/tp27/agent-enroll.token')
-p.write_text(secrets.token_urlsafe(32)+'\n')
-p.chmod(0o600)
+p=Path('/etc/tp27/agent-enroll.token'); p.write_text(secrets.token_urlsafe(32)+'\n'); p.chmod(0o600)
 PY
 fi
 
@@ -156,13 +156,10 @@ PY
   TP27_PANEL_PASSWORD="$NEW_PASSWORD" python3 - <<'PY'
 import hashlib, json, os, secrets
 from pathlib import Path
-password=os.environ['TP27_PANEL_PASSWORD']
-salt=secrets.token_bytes(16)
+password=os.environ['TP27_PANEL_PASSWORD']; salt=secrets.token_bytes(16)
 digest=hashlib.pbkdf2_hmac('sha256',password.encode(),salt,240000)
 obj={'password_salt':salt.hex(),'password_hash':digest.hex(),'session_secret':secrets.token_bytes(32).hex()}
-p=Path('/etc/tp27/panel.json')
-p.write_text(json.dumps(obj,indent=2)+'\n')
-p.chmod(0o600)
+p=Path('/etc/tp27/panel.json'); p.write_text(json.dumps(obj,indent=2)+'\n'); p.chmod(0o600)
 PY
 fi
 
@@ -173,8 +170,7 @@ if [[ ! -f /etc/tp27/panel.key || ! -f /etc/tp27/panel.crt ]]; then
   openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 3650 \
     -subj "/CN=$IP" -addext "subjectAltName=IP:$IP" \
     -keyout /etc/tp27/panel.key -out /etc/tp27/panel.crt >/dev/null 2>&1
-  chmod 600 /etc/tp27/panel.key
-  chmod 644 /etc/tp27/panel.crt
+  chmod 600 /etc/tp27/panel.key; chmod 644 /etc/tp27/panel.crt
 fi
 
 PREEXISTING_TRUSTED=0
@@ -190,31 +186,32 @@ systemctl restart tp27-panel.service
 systemctl enable tp27-ports-reconcile.service >/dev/null 2>&1 || true
 systemctl restart tp27-ports-reconcile.service || true
 
+PLAIN_PORT="$(choose_plain_port || true)"
+if [[ -n "$PLAIN_PORT" ]]; then
+  printf 'TP27_PLAIN_PORT=%s\n' "$PLAIN_PORT" >/etc/tp27/plain-control.env
+  chmod 600 /etc/tp27/plain-control.env
+  systemctl daemon-reload
+  systemctl enable tp27-plain-control.service >/dev/null 2>&1 || true
+  systemctl restart tp27-plain-control.service
+  sleep 1
+  if curl -fsS --connect-timeout 2 --max-time 4 "http://127.0.0.1:$PLAIN_PORT/health" | grep -q 'plain-hmac-v1'; then
+    echo "Signed Agent Control: http://$IP:$PLAIN_PORT"
+  else
+    echo "WARNING: signed Agent Control failed health check"
+  fi
+else
+  echo "WARNING: no free signed-control TCP port found; HTTPS enrollment remains available"
+fi
+
 SSL_STATE="self-signed"
 [[ "$PREEXISTING_TRUSTED" -eq 1 ]] && SSL_STATE="trusted"
-
 echo
 echo "===== TRUSTED IP SSL ====="
 SSL_SCRIPT="$(mktemp /tmp/tp27-ip-ssl.XXXXXX.sh)"
 if curl -fsSL "$RAW/enable-ip-ssl.sh" -o "$SSL_SCRIPT"; then
   chmod 700 "$SSL_SCRIPT"
-  if bash "$SSL_SCRIPT" "$IP"; then
-    SSL_STATE="trusted"
-  else
-    if [[ "$PREEXISTING_TRUSTED" -eq 1 ]]; then
-      echo "WARNING: SSL helper failed, but the existing trusted certificate was preserved."
-      SSL_STATE="trusted"
-    else
-      echo "WARNING: trusted IP SSL could not be issued now."
-      echo "Panel remains available with the fallback self-signed certificate."
-    fi
-  fi
-else
-  if [[ "$PREEXISTING_TRUSTED" -eq 1 ]]; then
-    echo "WARNING: could not download IP SSL helper; existing trusted certificate preserved."
-    SSL_STATE="trusted"
-  else
-    echo "WARNING: could not download IP SSL helper."
+  if bash "$SSL_SCRIPT" "$IP"; then SSL_STATE="trusted"; else
+    [[ "$PREEXISTING_TRUSTED" -eq 1 ]] && SSL_STATE="trusted" || true
   fi
 fi
 rm -f "$SSL_SCRIPT"
@@ -232,20 +229,11 @@ if [[ -n "$NEW_PASSWORD" ]]; then
   echo " Saved: /root/tp27-panel-credentials.txt"
 else
   echo " Existing panel password preserved."
-  if [[ -f /root/tp27-panel-credentials.txt ]]; then
-    sed -i "s#^URL=.*#URL=https://$IP:8787#" /root/tp27-panel-credentials.txt || true
-  fi
+  [[ -f /root/tp27-panel-credentials.txt ]] && sed -i "s#^URL=.*#URL=https://$IP:8787#" /root/tp27-panel-credentials.txt || true
 fi
 
-echo
-echo " Service: $(systemctl is-active tp27-panel.service || true)"
-echo " Port reconcile: $(systemctl is-active tp27-ports-reconcile.service || true)"
-echo " Agent controller: enabled"
-echo " AUTO GRE kernel data plane: raw GRE + GRE/UDP FOU fallback enabled"
-echo " TLS reverse transport: fallback available"
-if [[ "$SSL_STATE" == "trusted" ]]; then
-  echo " Trusted IP certificate and automatic renewal: enabled"
-else
-  echo " Trusted IP certificate: pending/fallback"
-fi
+echo " Panel: $(systemctl is-active tp27-panel.service || true)"
+echo " Signed control: $(systemctl is-active tp27-plain-control.service 2>/dev/null || true)${PLAIN_PORT:+ · TCP/$PLAIN_PORT}"
+echo " Auto transports: Raw GRE -> GRE/UDP FOU -> Framed TLS/TCP"
+echo " Existing VPN daemons are not restarted by TP27 provisioning"
 echo "============================================================"
