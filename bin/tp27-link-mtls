@@ -97,9 +97,10 @@ cleanup_gre_underlay_firewall() {
 }
 
 cleanup_fou() {
-  if [[ "$TRANSPORT" == "gre-fou" && "$FOU_PORT" != "0" ]]; then
-    ip fou del port "$FOU_PORT" 2>/dev/null || true
-  fi
+  # FOU listeners are global kernel registrations and may be shared by multiple
+  # TP27 links. Deleting a port while one link stops can break another live
+  # tunnel, so keep registrations and reuse them on subsequent starts.
+  return 0
 }
 
 ip link del "$IFACE" 2>/dev/null || true
@@ -146,7 +147,7 @@ if failures < 3 or failures > 20:
     raise SystemExit('invalid GRE keepalive failure threshold')
 if transport not in {'gre', 'gre-fou'}:
     raise SystemExit('invalid GRE transport')
-if transport == 'gre-fou' and not (1024 <= fou_port <= 65535):
+if transport == 'gre-fou' and not (fou_port == 443 or 1024 <= fou_port <= 65535):
     raise SystemExit('invalid FOU port')
 PY
 
