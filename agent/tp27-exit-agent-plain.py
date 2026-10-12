@@ -14,10 +14,17 @@ from pathlib import Path
 
 import requests
 
-PLAIN_VERSION = '1.0.0'
+PLAIN_VERSION = '1.1.0'
 BASE_AGENT = Path('/opt/tp27-exit-agent/tp27-exit-agent.py')
 CONFIG = Path('/etc/tp27/exit-agent.json')
-SAFE_ACTIONS = {'status', 'provision_gre_exit', 'restart_link', 'delete_exit'}
+SAFE_ACTIONS = {
+    'status',
+    'provision_gre_exit',
+    'provision_tls_exit',
+    'restart_link',
+    'delete_exit',
+    'upgrade_agent',
+}
 
 
 def load_base():
