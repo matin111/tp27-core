@@ -27,6 +27,7 @@ ALLOWED_ACTIONS = {
     'provision_exit',
     'provision_reverse_exit',
     'provision_gre_exit',
+    'provision_tls_exit',
     'restart_link',
     'delete_exit',
     'upgrade_agent',
@@ -358,8 +359,6 @@ async def api_agent_command(request: Request, agent_id: str, body: CommandBody):
     _admin_guard(request)
     try:
         item = queue_command(agent_id, body.action, body.args)
-        # Keep the full command record for compatibility while also returning
-        # the explicit field the browser uses for polling.
         return {**item, 'command_id': item['id']}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
