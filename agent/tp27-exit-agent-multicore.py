@@ -3,7 +3,8 @@ import importlib.util
 from pathlib import Path
 
 BASE_AGENT = Path('/opt/tp27-exit-agent/tp27-exit-agent.py')
-ADDON = Path('/opt/tp27-exit-agent/tp27_gost_addon.py')
+GOST_ADDON = Path('/opt/tp27-exit-agent/tp27_gost_addon.py')
+OPENVPN_ADDON = Path('/opt/tp27-exit-agent/tp27_openvpn_addon.py')
 
 
 def load(path, name):
@@ -16,8 +17,12 @@ def load(path, name):
 
 
 BASE = load(BASE_AGENT, 'tp27_exit_agent_base')
-GOST = load(ADDON, 'tp27_gost_addon')
-GOST.install(BASE)
+if GOST_ADDON.exists():
+    GOST = load(GOST_ADDON, 'tp27_gost_addon')
+    GOST.install(BASE)
+if OPENVPN_ADDON.exists():
+    OPENVPN = load(OPENVPN_ADDON, 'tp27_openvpn_addon')
+    OPENVPN.install(BASE)
 
 if __name__ == '__main__':
     BASE.main()
