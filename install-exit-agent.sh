@@ -97,6 +97,7 @@ bash "$CORE_INSTALLER" exit
 rm -f "$CORE_INSTALLER"
 trap - EXIT
 command -v tp27 >/dev/null || { echo "ERROR: TP27 core install failed"; exit 4; }
+command -v openvpn >/dev/null || { echo "ERROR: OpenVPN transport binary was not installed"; exit 4; }
 
 install -d -m 755 /opt/tp27-exit-agent /usr/local/lib/tp27
 install -d -m 700 /etc/tp27 /etc/tp27/backups /var/log/tp27
@@ -113,10 +114,13 @@ fetch agent/tp27-exit-agent.py /opt/tp27-exit-agent/tp27-exit-agent.py
 fetch agent/tp27-exit-agent-plain.py /opt/tp27-exit-agent/tp27-exit-agent-plain.py
 fetch agent/tp27-exit-agent-multicore.py /opt/tp27-exit-agent/tp27-exit-agent-multicore.py
 fetch agent/tp27_gost_addon.py /opt/tp27-exit-agent/tp27_gost_addon.py
+fetch agent/tp27_openvpn_addon.py /opt/tp27-exit-agent/tp27_openvpn_addon.py
 fetch systemd/tp27-exit-agent.service /etc/systemd/system/tp27-exit-agent.service
 fetch systemd/tp27-exit-agent-plain.service /etc/systemd/system/tp27-exit-agent-plain.service
 fetch bin/tp27-link-mtls /usr/local/lib/tp27/tp27-link
 fetch bin/tp27-link-dispatcher /usr/local/lib/tp27/tp27-link-dispatcher
+fetch bin/tp27-link-preflight /usr/local/lib/tp27/tp27-link-preflight
+fetch bin/tp27-openvpn-core /usr/local/lib/tp27/tp27-openvpn-core
 fetch systemd/tp27-link@.service /etc/systemd/system/tp27-link@.service
 fetch bin/tp27-framed-tls.py /usr/local/lib/tp27/tp27-framed-tls.py
 fetch systemd/tp27-framed@.service /etc/systemd/system/tp27-framed@.service
@@ -127,10 +131,13 @@ chmod 700 \
   /opt/tp27-exit-agent/tp27-exit-agent.py \
   /opt/tp27-exit-agent/tp27-exit-agent-plain.py \
   /opt/tp27-exit-agent/tp27-exit-agent-multicore.py \
-  /opt/tp27-exit-agent/tp27_gost_addon.py
+  /opt/tp27-exit-agent/tp27_gost_addon.py \
+  /opt/tp27-exit-agent/tp27_openvpn_addon.py
 chmod 755 \
   /usr/local/lib/tp27/tp27-link \
   /usr/local/lib/tp27/tp27-link-dispatcher \
+  /usr/local/lib/tp27/tp27-link-preflight \
+  /usr/local/lib/tp27/tp27-openvpn-core \
   /usr/local/lib/tp27/tp27-framed-tls.py \
   /usr/local/lib/tp27/tp27-gost-core.py \
   /usr/local/lib/tp27/tp27-gost-install.sh
@@ -140,6 +147,8 @@ chmod 755 \
   /opt/tp27-exit-agent/tp27-exit-agent-plain.py \
   /opt/tp27-exit-agent/tp27-exit-agent-multicore.py \
   /opt/tp27-exit-agent/tp27_gost_addon.py \
+  /opt/tp27-exit-agent/tp27_openvpn_addon.py \
+  /usr/local/lib/tp27/tp27-link-preflight \
   /usr/local/lib/tp27/tp27-framed-tls.py \
   /usr/local/lib/tp27/tp27-gost-core.py
 
@@ -241,7 +250,8 @@ echo " Transport: $TRANSPORT"
 echo " Agent version: $AGENT_VERSION"
 echo " Service: $SERVICE"
 echo " Config: /etc/tp27/exit-agent.json"
-echo " Cores: GRE + FOU + GOST/WSS + Framed TLS"
+echo " Cores: GRE + FOU + OpenVPN/TCP + GOST/WSS + Framed TLS"
+echo " OpenVPN transport: $(openvpn --version 2>/dev/null | head -1 || true)"
 echo " GOST: v3.3.0 ($GOST_STATE)"
 echo " Existing VPN daemons: untouched"
 echo "============================================================"
