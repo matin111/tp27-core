@@ -14,15 +14,17 @@ from pathlib import Path
 
 import requests
 
-PLAIN_VERSION = '1.2.0'
+PLAIN_VERSION = '1.3.0'
 BASE_AGENT = Path('/opt/tp27-exit-agent/tp27-exit-agent.py')
 GOST_ADDON = Path('/opt/tp27-exit-agent/tp27_gost_addon.py')
+OPENVPN_ADDON = Path('/opt/tp27-exit-agent/tp27_openvpn_addon.py')
 CONFIG = Path('/etc/tp27/exit-agent.json')
 SAFE_ACTIONS = {
     'status',
     'provision_gre_exit',
     'provision_tls_exit',
     'provision_gost_exit',
+    'provision_openvpn_exit',
     'restart_link',
     'delete_exit',
     'upgrade_agent',
@@ -46,6 +48,9 @@ BASE = load_base()
 if GOST_ADDON.exists():
     GOST = load_module(GOST_ADDON, 'tp27_gost_addon_plain')
     GOST.install(BASE)
+if OPENVPN_ADDON.exists():
+    OPENVPN = load_module(OPENVPN_ADDON, 'tp27_openvpn_addon_plain')
+    OPENVPN.install(BASE)
 BASE_VERSION = getattr(BASE, 'VERSION', 'unknown')
 
 
