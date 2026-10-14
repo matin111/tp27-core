@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+[[ "${1:-}" == "--config" && -n "${2:-}" ]] || { echo "usage: tp27-openvpn-core --config <json>" >&2; exit 2; }
+CFG="$2"
+[[ -f "$CFG" ]] || { echo "missing config: $CFG" >&2; exit 2; }
+
+command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 3; }
+command -v openvpn >/dev/null 2>&1 || { echo "openvpn is required; rerun TP27 installer" >&2; exit 3; }
+
+ROLE="$(jq -r '.role // empty' "$CFG")"
+ID="$(jq -r '.id // empty' "$CFG")"
+IFACE="$(jq -r '.interface // empty' "$CFG")"
+ADDR="$(jq -r '.tunnel_ip // empty' "$CFG")"
+PEER="$(jq -r '.peer_ip // empty' "$CFG")"
+LOCAL_PUBLIC="$(jq -r '.local_public // empty' "$CFG")"
+REMOTE_PUBLIC="$(jq -r '.remote_public // empty' "$CFG")"
+PORT="$(jq -r '.listen_port // 0' "$CFG")"
+MTU="$(jq -r '.mtu // 1300' "$CFG")"
+SECRET="$(jq -r '.secret_file // empty' "$CFG")"
+
+[[ "$ROLE" == "openvpn-server" || "$ROLE" == "openvpn-client" ]] || { echo "invalid role=$ROLE" >&2; exit 4; }
+[[ "$IFACE" =~ ^[A-Za-z0-9_-]{1,15}$ ]] || { echo "invalid interface" >&2; exit 4; }
+[[ -s "$SECRET" ]] || { echo "missing OpenVPN secret" >&2; exit 4; }
+
+python3 - "$ADDR" "$PEER" "$LOCAL_PUBLIC" "$REMOTE_PUBLIC" "$PORT" "$MTU" <<'PY'
+import ipaddress, sys
+iface=ipaddress.ip_interface(sys.argv[1])
+peer=ipaddress.ip_address(sys.argv[2])
+local_public=ipaddress.ip_address(sys.argv[3])
+remote_public=ipaddress.ip_address(sys.argv[4])
+port=int(sys.argv[5]); mtu=int(sys.argv[6])
+if iface.version != 4 or peer.version != 4 or peer not in iface.network:
+    raise SystemExit('invalid tunnel addressing')
+if local_public.version != 4 or remote_public.version != 4:
+    raise SystemExit('public addresses must be IPv4')
+if not 1 <= port <= 65535:
+    raise SystemExit('invalid port')
+if not 1000 <= mtu <= 1400:
+    raise SystemExit('invalid mtu')
+PY
+
+LOCAL_IP="${ADDR%/*}"
+RUN_DIR="/run/tp27"
+OVPN_CFG="$RUN_DIR/openvpn-${ID}.conf"
+mkdir -p "$RUN_DIR"
+chmod 700 "$RUN_DIR"
+
+IPT="$(command -v iptables || true)"
+ensure_chain_hook() {
+  local table="$1" parent="$2" chain="$3"
+  [[ -n "$IPT" ]] || return 0
+  "$IPT" -w 5 -t "$table" -N "$chain" 2>/dev/null || true
+  "$IPT" -w 5 -t "$table" -C "$parent" -j "$chain" 2>/dev/null || \
+    "$IPT" -w 5 -t "$table" -I "$parent" 1 -j "$chain"
+}
+ensure_rule() {
+  local table="$1" chain="$2"; shift 2
+  [[ -n "$IPT" ]] || return 0
+  "$IPT" -w 5 -t "$table" -C "$chain" "$@" 2>/dev/null || \
+    "$IPT" -w 5 -t "$table" -A "$chain" "$@"
+}
+remove_rule() {
+  local table="$1" chain="$2"; shift 2
+  [[ -n "$IPT" ]] || return 0
+  while "$IPT" -w 5 -t "$table" -C "$chain" "$@" 2>/dev/null; do
+    "$IPT" -w 5 -t "$table" -D "$chain" "$@" 2>/dev/null || break
+  done
+}
+
+setup_firewall() {
+  [[ -n "$IPT" ]] || return 0
+  ensure_chain_hook filter INPUT TP27_OVPN_IN
+  ensure_chain_hook filter OUTPUT TP27_OVPN_OUT
+  ensure_chain_hook filter FORWARD TP27_OVPN_FWD
+  ensure_rule filter TP27_OVPN_IN -i "$IFACE" -j ACCEPT
+  ensure_rule filter TP27_OVPN_OUT -o "$IFACE" -j ACCEPT
+  ensure_rule filter TP27_OVPN_FWD -i "$IFACE" -j ACCEPT
+  ensure_rule filter TP27_OVPN_FWD -o "$IFACE" -j ACCEPT
+  if [[ "$ROLE" == "openvpn-server" ]]; then
+    ensure_rule filter TP27_OVPN_IN -p tcp -s "$REMOTE_PUBLIC/32" -d "$LOCAL_PUBLIC/32" --dport "$PORT" -j ACCEPT
+    ensure_rule filter TP27_OVPN_OUT -p tcp -s "$LOCAL_PUBLIC/32" -d "$REMOTE_PUBLIC/32" --sport "$PORT" -j ACCEPT
+  fi
+}
+
+cleanup_firewall() {
+  [[ -n "$IPT" ]] || return 0
+  remove_rule filter TP27_OVPN_IN -i "$IFACE" -j ACCEPT
+  remove_rule filter TP27_OVPN_OUT -o "$IFACE" -j ACCEPT
+  remove_rule filter TP27_OVPN_FWD -i "$IFACE" -j ACCEPT
+  remove_rule filter TP27_OVPN_FWD -o "$IFACE" -j ACCEPT
+  if [[ "$ROLE" == "openvpn-server" ]]; then
+    remove_rule filter TP27_OVPN_IN -p tcp -s "$REMOTE_PUBLIC/32" -d "$LOCAL_PUBLIC/32" --dport "$PORT" -j ACCEPT
+    remove_rule filter TP27_OVPN_OUT -p tcp -s "$LOCAL_PUBLIC/32" -d "$REMOTE_PUBLIC/32" --sport "$PORT" -j ACCEPT
+  fi
+}
+
+cleanup() {
+  local rc=$?
+  cleanup_firewall || true
+  rm -f "$OVPN_CFG"
+  exit "$rc"
+}
+trap cleanup EXIT INT TERM
+
+ip link del "$IFACE" 2>/dev/null || true
+setup_firewall
+
+{
+  echo "dev $IFACE"
+  echo "dev-type tun"
+  echo "topology p2p"
+  echo "ifconfig $LOCAL_IP $PEER"
+  echo "secret $SECRET"
+  echo "cipher AES-256-CBC"
+  echo "auth SHA256"
+  echo "tun-mtu $MTU"
+  echo "txqueuelen 1000"
+  echo "persist-key"
+  echo "persist-tun"
+  echo "ping 5"
+  echo "ping-restart 20"
+  echo "verb 3"
+  echo "mute 10"
+  if openvpn --help 2>&1 | grep -q 'allow-deprecated-insecure-static-crypto'; then
+    echo "allow-deprecated-insecure-static-crypto"
+  fi
+  if [[ "$ROLE" == "openvpn-server" ]]; then
+    echo "proto tcp-server"
+    echo "local $LOCAL_PUBLIC"
+    echo "port $PORT"
+  else
+    echo "proto tcp-client"
+    echo "remote $REMOTE_PUBLIC $PORT"
+    echo "nobind"
+    echo "connect-retry 1 5"
+    echo "connect-timeout 5"
+    echo "resolv-retry infinite"
+  fi
+} >"$OVPN_CFG"
+chmod 600 "$OVPN_CFG"
+
+# rp_filter is scoped only to the TP27 interface after OpenVPN creates it.
+(
+  for _ in $(seq 1 100); do
+    if [[ -d "/proc/sys/net/ipv4/conf/$IFACE" ]]; then
+      sysctl -q -w "net.ipv4.conf.${IFACE}.rp_filter=0" 2>/dev/null || true
+      break
+    fi
+    sleep 0.1
+  done
+) &
+
+exec openvpn --config "$OVPN_CFG"
