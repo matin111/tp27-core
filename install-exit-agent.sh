@@ -14,8 +14,52 @@ RAW="${TP27_REPO_RAW:-https://raw.githubusercontent.com/matin111/tp27-core/main}
 }
 [[ "$CONTROLLER" == https://* ]] || { echo "ERROR: controller URL must use https://"; exit 3; }
 
+wait_for_apt() {
+  local waited=0
+  local max_wait="${TP27_APT_WAIT_SECONDS:-900}"
+  local busy=0
+
+  while (( waited < max_wait )); do
+    busy=0
+
+    if command -v fuser >/dev/null 2>&1; then
+      if fuser \
+        /var/lib/dpkg/lock \
+        /var/lib/dpkg/lock-frontend \
+        /var/lib/apt/lists/lock \
+        /var/cache/apt/archives/lock \
+        >/dev/null 2>&1; then
+        busy=1
+      fi
+    else
+      if pgrep -x apt >/dev/null 2>&1 \
+        || pgrep -x apt-get >/dev/null 2>&1 \
+        || pgrep -x dpkg >/dev/null 2>&1 \
+        || pgrep -f '[u]nattended-upgrade' >/dev/null 2>&1; then
+        busy=1
+      fi
+    fi
+
+    if (( busy == 0 )); then
+      return 0
+    fi
+
+    if (( waited == 0 )); then
+      echo "APT/DPKG is busy; waiting safely for the package manager lock..."
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+
+  echo "ERROR: apt/dpkg remained busy for ${max_wait}s; refusing to delete lock files." >&2
+  echo "Check the active package-manager process, then retry the same installer command." >&2
+  return 1
+}
+
 export DEBIAN_FRONTEND=noninteractive
+wait_for_apt
 apt-get update
+wait_for_apt
 apt-get install -y python3-venv ca-certificates curl iproute2 iputils-ping jq openssl tar coreutils
 
 REQUESTED_CONTROLLER="$CONTROLLER"
