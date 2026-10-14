@@ -25,6 +25,15 @@ def load_json(path, default):
         return default
 
 
+def atomic_json(path, data):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    tmp.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
 def tp27_iface(name):
     return bool(name) and (name.startswith('t27') or name.startswith('tp27'))
 
@@ -39,6 +48,91 @@ def core_ifaces():
             if tp27_iface(iface):
                 out.add(iface)
     return out
+
+
+def find_core_row(eid):
+    data = load_json(CORE_CONFIG, {'exits': []})
+    for item in data.get('exits', []):
+        rows = item.get('channels') or [item]
+        for row in rows:
+            cid = str(row.get('id') or item.get('id') or '')
+            if cid != eid:
+                continue
+            merged = dict(item)
+            merged.update(row)
+            merged['id'] = eid
+            return merged, data
+    return None, data
+
+
+def recover_gre_config(eid, cfg_path):
+    row, core = find_core_row(eid)
+    if not isinstance(row, dict):
+        return None
+
+    transport = str(row.get('transport') or '').strip().lower()
+    mode = str(row.get('mode') or '').strip().lower()
+    if transport not in {'gre', 'gre-fou'} and mode not in {'gre-native', 'gre-fou'}:
+        return None
+    if transport not in {'gre', 'gre-fou'}:
+        transport = 'gre-fou' if mode == 'gre-fou' else 'gre'
+
+    iface = str(row.get('interface') or '').split('@', 1)[0]
+    tunnel_ip = str(row.get('local_ip') or row.get('tunnel_ip') or '').strip()
+    peer_ip = str(row.get('remote_ip') or row.get('peer_ip') or '').strip()
+    local_public = str(row.get('public_local') or core.get('public_ip') or '').strip()
+    remote_public = str(row.get('public_remote') or row.get('endpoint') or '').strip()
+    agent_id = str(row.get('agent_id') or '').strip()
+    mtu = int(row.get('mtu') or 1400)
+    gre_key = int(row.get('gre_key') or 0)
+    fou_port = int(row.get('fou_port') or row.get('port') or 0)
+
+    try:
+        tif = ipaddress.ip_interface(tunnel_ip)
+        peer = ipaddress.ip_address(peer_ip)
+        lip = ipaddress.ip_address(local_public)
+        rip = ipaddress.ip_address(remote_public)
+    except Exception:
+        return None
+
+    if tif.version != 4 or peer.version != 4 or peer not in tif.network:
+        return None
+    if lip.version != 4 or rip.version != 4:
+        return None
+    if not tp27_iface(iface):
+        return None
+    if not 1 <= gre_key <= 4294967295:
+        return None
+    if not 1000 <= mtu <= 1476:
+        return None
+    if transport == 'gre-fou' and not (fou_port == 443 or 1024 <= fou_port <= 65535):
+        return None
+
+    cfg = {
+        'role': 'gre-iran',
+        'transport': transport,
+        'mode': 'gre-fou' if transport == 'gre-fou' else 'gre-native',
+        'id': eid,
+        'interface': iface,
+        'tunnel_ip': tunnel_ip,
+        'peer_ip': peer_ip,
+        'local_public': local_public,
+        'remote_public': remote_public,
+        'gre_key': gre_key,
+        'mtu': mtu,
+        'txqueuelen': int(row.get('txqueuelen') or 1000),
+        'agent_id': agent_id,
+    }
+    if transport == 'gre-fou':
+        cfg['fou_port'] = fou_port
+
+    atomic_json(cfg_path, cfg)
+    print(
+        f'TP27_PREFLIGHT_CONFIG_RECOVERED id={eid} transport={transport} '
+        f'iface={iface} tunnel_ip={tunnel_ip} peer={peer_ip}',
+        file=sys.stderr,
+    )
+    return cfg
 
 
 def config_by_iface():
@@ -91,7 +185,9 @@ def main():
     cfg_path = EXITS / f'{eid}.json'
     cfg = load_json(cfg_path, None)
     if not isinstance(cfg, dict):
-        raise SystemExit(f'missing or invalid {cfg_path}')
+        cfg = recover_gre_config(eid, cfg_path)
+    if not isinstance(cfg, dict):
+        raise SystemExit(f'missing or invalid {cfg_path}; automatic recovery is available only for GRE/FOU records with complete controller state')
 
     iface = str(cfg.get('interface') or '').split('@', 1)[0]
     tunnel_ip = str(cfg.get('tunnel_ip') or '').strip()
