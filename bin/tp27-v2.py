@@ -63,10 +63,25 @@ def bootstrap(a):
     c = load()
     if not isinstance(c, dict):
         c = {}
+
+    # Upgrades must never silently flip an existing controller into an Exit
+    # node (or vice versa). A wrong role changes status/provisioning semantics
+    # and can make healthy multi-exit state look broken. Explicit conversion is
+    # still possible for maintenance with TP27_ALLOW_ROLE_CHANGE=1.
+    existing_role = str(c.get('role') or '').strip().lower()
+    requested_role = str(a.role or '').strip().lower()
+    allow_role_change = os.environ.get('TP27_ALLOW_ROLE_CHANGE', '0') == '1'
+    if existing_role in {'iran', 'exit'} and existing_role != requested_role and not allow_role_change:
+        raise SystemExit(
+            f'ERROR: role change blocked: existing={existing_role} requested={requested_role}. '
+            'Run the installer with the correct role. For an intentional conversion only, '
+            'set TP27_ALLOW_ROLE_CHANGE=1.'
+        )
+
     # Upgrade in place. Never replace the whole state simply because an older
     # or newer version marker is present; doing so could wipe configured exits.
     c['version'] = 2
-    c['role'] = a.role
+    c['role'] = requested_role
     c.setdefault('node_id', socket.gethostname())
     current_ip = _valid_ipv4(c.get('public_ip'))
     if not current_ip:
@@ -74,7 +89,7 @@ def bootstrap(a):
     c['public_ip'] = current_ip
     c.setdefault('exits', [])
     save(c)
-    print(f"TP27 v0.2 role={a.role} public_ip={c.get('public_ip')}")
+    print(f"TP27 v0.2 role={requested_role} public_ip={c.get('public_ip')}")
 
 def write_json(path, obj):
     path.parent.mkdir(parents=True, exist_ok=True)
