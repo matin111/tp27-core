@@ -13,7 +13,7 @@ Iran controller + panel:
   curl -fsSL https://raw.githubusercontent.com/matin111/tp27-core/main/install.sh | bash -s -- iran
 
 Exit agent:
-  curl -fsSL https://raw.githubusercontent.com/matin111/tp27-core/main/install.sh | bash -s -- agent <CONTROLLER_URL> <ENROLL_TOKEN> [--plain <PLAIN_URL>] [--insecure]
+  curl -fsSL https://raw.githubusercontent.com/matin111/tp27-core/main/install.sh | bash -s -- agent <CONTROLLER_URL> <ENROLL_TOKEN> [--plain <PLAIN_URL>] [--prefer-plain] [--insecure]
 
 Internal/core-only exit install:
   install.sh exit
@@ -22,13 +22,29 @@ EOF
 
 [[ "$EUID" -eq 0 ]] || { echo "ERROR: run as root"; exit 1; }
 
+valid_enroll_token() {
+  local token="$1"
+  [[ ${#token} -ge 16 ]] || return 1
+  case "$token" in
+    TOKEN_FROM_IRAN|ENROLL_TOKEN|TOKEN|YOUR_TOKEN|CHANGEME|REPLACE_ME)
+      return 1
+      ;;
+  esac
+  return 0
+}
+
 if [[ "$ACTION" == "agent" ]]; then
   CONTROLLER="${2:-}"
   TOKEN="${3:-}"
   [[ -n "$CONTROLLER" && -n "$TOKEN" ]] || { usage; exit 2; }
+  valid_enroll_token "$TOKEN" || {
+    echo "ERROR: invalid enroll token. Copy the real token from the Iran installer output; do not use placeholder text." >&2
+    exit 2
+  }
   shift 3
   MODE=""
   PLAIN_URL=""
+  PREFER_PLAIN="0"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --insecure)
@@ -36,15 +52,21 @@ if [[ "$ACTION" == "agent" ]]; then
       --plain)
         [[ $# -ge 2 ]] || { echo "ERROR: --plain requires URL"; exit 2; }
         PLAIN_URL="$2"; shift 2 ;;
+      --prefer-plain)
+        PREFER_PLAIN="1"; shift ;;
       *)
         echo "ERROR: unknown agent option: $1"; usage; exit 2 ;;
     esac
   done
+  if [[ "$PREFER_PLAIN" == "1" && -z "$PLAIN_URL" ]]; then
+    echo "ERROR: --prefer-plain requires --plain <URL>" >&2
+    exit 2
+  fi
   TMP="$(mktemp /tmp/tp27-exit-agent-install.XXXXXX.sh)"
   trap 'rm -f "$TMP"' EXIT
   curl -fsSL "$RAW/install-exit-agent.sh" -o "$TMP"
   chmod 700 "$TMP"
-  bash "$TMP" "$CONTROLLER" "$TOKEN" "$MODE" "$PLAIN_URL"
+  bash "$TMP" "$CONTROLLER" "$TOKEN" "$MODE" "$PLAIN_URL" "$PREFER_PLAIN"
   exit $?
 fi
 
@@ -197,7 +219,7 @@ if [[ "$ROLE" == "iran" && "${TP27_CORE_ONLY:-0}" != "1" ]]; then
   if [[ -n "$PANEL_IP" && -n "$TOKEN" ]]; then
     echo "Run this SAME installer link on every Exit server:"
     if [[ -n "$PLAIN_PORT" ]]; then
-      printf 'curl -fsSL %q | bash -s -- agent %q %q --plain %q\n' \
+      printf 'curl -fsSL %q | bash -s -- agent %q %q --plain %q --prefer-plain\n' \
         "$INSTALL_URL" "https://$PANEL_IP:8787" "$TOKEN" "http://$PANEL_IP:$PLAIN_PORT"
     else
       printf 'curl -fsSL %q | bash -s -- agent %q %q\n' \
