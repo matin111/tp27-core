@@ -64,6 +64,28 @@ wait_for_apt() {
   return 1
 }
 
+install_openvpn_safely() {
+  command -v openvpn >/dev/null 2>&1 && return 0
+  local policy='/usr/sbin/policy-rc.d'
+  local backup=''
+  if [[ -e "$policy" ]]; then
+    backup="$(mktemp /tmp/tp27-policy-rc.XXXXXX)"
+    cp -a "$policy" "$backup"
+  fi
+  printf '#!/bin/sh\nexit 101\n' >"$policy"
+  chmod 755 "$policy"
+  if ! apt-get install -y openvpn; then
+    if [[ -n "$backup" ]]; then cp -a "$backup" "$policy"; rm -f "$backup"; else rm -f "$policy"; fi
+    return 1
+  fi
+  if [[ -n "$backup" ]]; then
+    cp -a "$backup" "$policy"
+    rm -f "$backup"
+  else
+    rm -f "$policy"
+  fi
+}
+
 export DEBIAN_FRONTEND=noninteractive
 
 echo "============================================================"
@@ -74,6 +96,7 @@ echo "============================================================"
 wait_for_apt
 apt-get update
 apt-get install -y socat openssl iproute2 iptables jq curl ca-certificates python3 openssh-client iputils-ping kmod
+install_openvpn_safely
 
 install -d -m 700 /etc/tp27 /etc/tp27/certs /etc/tp27/exits /etc/tp27/backups
 install -d -m 755 /var/lib/tp27 /var/log/tp27 /usr/local/lib/tp27 /usr/local/bin
@@ -107,14 +130,18 @@ fetch() {
 
 fetch bin/tp27-v2.py /usr/local/lib/tp27/tp27.py
 fetch bin/tp27-link-mtls /usr/local/lib/tp27/tp27-link
+fetch bin/tp27-link-dispatcher /usr/local/lib/tp27/tp27-link-dispatcher
 fetch bin/tp27-link-preflight /usr/local/lib/tp27/tp27-link-preflight
+fetch bin/tp27-openvpn-core /usr/local/lib/tp27/tp27-openvpn-core
 fetch systemd/tp27-link@.service /etc/systemd/system/tp27-link@.service
 fetch bin/tp27-framed-tls.py /usr/local/lib/tp27/tp27-framed-tls.py
 fetch systemd/tp27-framed@.service /etc/systemd/system/tp27-framed@.service
 chmod 755 \
   /usr/local/lib/tp27/tp27.py \
   /usr/local/lib/tp27/tp27-link \
+  /usr/local/lib/tp27/tp27-link-dispatcher \
   /usr/local/lib/tp27/tp27-link-preflight \
+  /usr/local/lib/tp27/tp27-openvpn-core \
   /usr/local/lib/tp27/tp27-framed-tls.py
 
 python3 -m py_compile \
@@ -141,6 +168,7 @@ tp27 bootstrap --role "$ROLE"
 
 echo
 echo "TP27 core installed for role=$ROLE"
+echo "Transport runtime: GRE + GRE/UDP + OpenVPN/TCP + GOST/WSS + Framed TLS"
 tp27 status
 
 if [[ "$ROLE" == "iran" && "${TP27_CORE_ONLY:-0}" != "1" ]]; then
