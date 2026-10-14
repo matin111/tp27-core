@@ -47,6 +47,8 @@ mkdir -p "$RUN_DIR"
 chmod 700 "$RUN_DIR"
 
 IPT="$(command -v iptables || true)"
+OVPN_PID=""
+
 ensure_chain_hook() {
   local table="$1" parent="$2" chain="$3"
   [[ -n "$IPT" ]] || return 0
@@ -97,6 +99,8 @@ cleanup_firewall() {
 
 cleanup() {
   local rc=$?
+  trap - EXIT INT TERM
+  [[ -n "${OVPN_PID:-}" ]] && kill "$OVPN_PID" 2>/dev/null || true
   cleanup_firewall || true
   rm -f "$OVPN_CFG"
   exit "$rc"
@@ -151,4 +155,11 @@ chmod 600 "$OVPN_CFG"
   done
 ) &
 
-exec openvpn --config "$OVPN_CFG"
+openvpn --config "$OVPN_CFG" &
+OVPN_PID=$!
+set +e
+wait "$OVPN_PID"
+RC=$?
+set -e
+OVPN_PID=""
+exit "$RC"
