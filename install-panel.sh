@@ -5,6 +5,7 @@ REQUESTED_IP="${1:-}"
 
 [[ "$EUID" -eq 0 ]] || { echo "ERROR: run as root"; exit 1; }
 command -v tp27 >/dev/null || { echo "ERROR: install TP27 core first"; exit 2; }
+command -v openvpn >/dev/null || { echo "ERROR: OpenVPN transport runtime missing; run unified install.sh iran"; exit 2; }
 
 valid_ip() {
   python3 - "$1" <<'PY'
@@ -67,6 +68,7 @@ PY
 }
 
 wait_for_apt() {
+  command -v fuser >/dev/null 2>&1 || return 0
   for _ in $(seq 1 60); do
     if ! fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then return 0; fi
     echo "Waiting for apt lock..."; sleep 2
@@ -114,8 +116,6 @@ curl -fsSL "$RAW/panel/requirements.txt" -o /opt/tp27-panel/requirements.txt
 for f in app.py auth.py provision.py provision_password.py provision_agent.py agent_control.py ports.py portplan.py plain_control.py; do
   curl -fsSL "$RAW/panel/$f" -o "/opt/tp27-panel/$f"
 done
-# Keep the mature GRE/FOU/TLS builder as an internal layer and expose the
-# multi-core wrapper as provision_gre.py so app.py does not need a migration.
 curl -fsSL "$RAW/panel/provision_resilient.py" -o /opt/tp27-panel/provision_resilient.py
 curl -fsSL "$RAW/panel/provision_multicore.py" -o /opt/tp27-panel/provision_gre.py
 
@@ -128,6 +128,8 @@ curl -fsSL "$RAW/systemd/tp27-ports-reconcile.service" -o /etc/systemd/system/tp
 curl -fsSL "$RAW/systemd/tp27-plain-control.service" -o /etc/systemd/system/tp27-plain-control.service
 curl -fsSL "$RAW/bin/tp27-link-mtls" -o /usr/local/lib/tp27/tp27-link
 curl -fsSL "$RAW/bin/tp27-link-dispatcher" -o /usr/local/lib/tp27/tp27-link-dispatcher
+curl -fsSL "$RAW/bin/tp27-link-preflight" -o /usr/local/lib/tp27/tp27-link-preflight
+curl -fsSL "$RAW/bin/tp27-openvpn-core" -o /usr/local/lib/tp27/tp27-openvpn-core
 curl -fsSL "$RAW/systemd/tp27-link@.service" -o /etc/systemd/system/tp27-link@.service
 curl -fsSL "$RAW/bin/tp27-framed-tls.py" -o /usr/local/lib/tp27/tp27-framed-tls.py
 curl -fsSL "$RAW/systemd/tp27-framed@.service" -o /etc/systemd/system/tp27-framed@.service
@@ -136,6 +138,8 @@ curl -fsSL "$RAW/bin/tp27-gost-install.sh" -o /usr/local/lib/tp27/tp27-gost-inst
 chmod 755 \
   /usr/local/lib/tp27/tp27-link \
   /usr/local/lib/tp27/tp27-link-dispatcher \
+  /usr/local/lib/tp27/tp27-link-preflight \
+  /usr/local/lib/tp27/tp27-openvpn-core \
   /usr/local/lib/tp27/tp27-framed-tls.py \
   /usr/local/lib/tp27/tp27-gost-core.py \
   /usr/local/lib/tp27/tp27-gost-install.sh
@@ -147,6 +151,7 @@ chmod 600 /opt/tp27-panel/*.py
   /opt/tp27-panel/provision_resilient.py /opt/tp27-panel/provision_gre.py \
   /opt/tp27-panel/agent_control.py /opt/tp27-panel/plain_control.py \
   /opt/tp27-panel/ports.py /opt/tp27-panel/portplan.py \
+  /usr/local/lib/tp27/tp27-link-preflight \
   /usr/local/lib/tp27/tp27-framed-tls.py /usr/local/lib/tp27/tp27-gost-core.py
 
 GOST_STATE="deferred"
@@ -252,7 +257,8 @@ fi
 
 echo " Panel: $(systemctl is-active tp27-panel.service || true)"
 echo " Signed control: $(systemctl is-active tp27-plain-control.service 2>/dev/null || true)${PLAIN_PORT:+ · TCP/$PLAIN_PORT}"
-echo " Auto cores: Raw GRE -> GRE/UDP FOU -> GOST/WSS -> Framed TLS/TCP"
+echo " Auto cores: Raw GRE -> GRE/UDP FOU -> OpenVPN/TCP -> GOST/WSS -> Framed TLS/TCP"
+echo " OpenVPN: $(openvpn --version 2>/dev/null | head -1 || true)"
 echo " GOST: v3.3.0 ($GOST_STATE)"
 echo " Existing VPN daemons are not restarted by TP27 provisioning"
 echo "============================================================"
