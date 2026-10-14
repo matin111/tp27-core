@@ -11,6 +11,9 @@ case "$TRANSPORT" in
   gost-wss)
     exec /usr/local/lib/tp27/tp27-gost-core.py --config "$CFG"
     ;;
+  openvpn-tcp)
+    exec /usr/local/lib/tp27/tp27-openvpn-core --config "$CFG"
+    ;;
   *)
     exec /usr/local/lib/tp27/tp27-link "$ID"
     ;;
