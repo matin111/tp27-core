@@ -8,6 +8,7 @@ on:
     paths:
       - "hybrid_core/**"
       - "bin/tp27-hybridctl.py"
+      - "bin/tp27-wss-l3.py"
       - "tests/**"
       - "config/hybrid-metrics.example.json"
       - ".github/workflows/hybrid-core-ci.yml"
@@ -21,7 +22,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Compile
-        run: python -m compileall -q hybrid_core bin/tp27-hybridctl.py tests
+        run: python -m compileall -q hybrid_core bin/tp27-hybridctl.py bin/tp27-wss-l3.py tests
       - name: Unit tests
         run: python -m unittest discover -v -s tests -p 'test_*.py'
       - name: Planner smoke test
