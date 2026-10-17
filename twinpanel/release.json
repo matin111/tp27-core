@@ -1,0 +1,11 @@
+{
+  "product": "TwinPanel",
+  "channel": "candidate",
+  "version": "1.1.0-preview",
+  "published_at": "2026-10-17T13:30:00Z",
+  "minimum_updater_version": 1,
+  "license_required": true,
+  "notes_fa": "شاخه انتشار در حال یکپارچه‌سازی آخرین تغییرات پنل، Routeها، مدیریت نمایندگی و رابط تونل است. تا پایان تست نصب تمیز و بروزرسانی، این نسخه Candidate محسوب می‌شود.",
+  "notes_en": "The release branch is consolidating the latest admin routes, reseller management, and unified tunnel UI. This remains a candidate until clean-install and upgrade validation pass.",
+  "github": "https://github.com/matin111/twinpanel"
+}
