@@ -1,6 +1,9 @@
 import unittest
 
 from hybrid_core import (
+    BackhaulClientConfig,
+    BackhaulServerConfig,
+    BackhaulTransport,
     FRPClientConfig,
     FRPServerConfig,
     FRPTransport,
@@ -15,6 +18,8 @@ from hybrid_core import (
     build_service_spec,
     rank_candidates,
     render_authorized_key,
+    render_backhaul_client,
+    render_backhaul_server,
     render_frpc,
     render_frps,
     render_iran_systemd,
@@ -189,6 +194,30 @@ class HybridCorePlannerTests(unittest.TestCase):
         self.assertIn("-R 127.0.0.1:55400:127.0.0.1:55400", unit)
         self.assertIn("ExitOnForwardFailure=yes", unit)
         self.assertIn("UserKnownHostsFile=/etc/tp27/keys/known_hosts", unit)
+
+    def test_backhaul_renderer_deduplicates_tcp_udp_twins_and_enables_udp(self):
+        service = build_service_spec(ServiceProtocol.CISCO, port=443)
+        server = render_backhaul_server(
+            BackhaulServerConfig(
+                bind_addr=":3080",
+                token="test-token",
+                transport=BackhaulTransport.TCPMUX,
+            ),
+            service.mappings,
+        )
+        self.assertIn('transport = "tcpmux"', server)
+        self.assertIn("accept_udp = true", server)
+        self.assertEqual(server.count('"443"'), 1)
+
+        client = render_backhaul_client(
+            BackhaulClientConfig(
+                remote_addr="198.51.100.10:3080",
+                token="test-token",
+                transport=BackhaulTransport.TCPMUX,
+            )
+        )
+        self.assertIn('remote_addr = "198.51.100.10:3080"', client)
+        self.assertIn("connection_pool = 8", client)
 
 
 if __name__ == "__main__":
