@@ -77,6 +77,34 @@ The renderer validates:
 
 It only returns configuration text; it does not invoke `wg`, `ip`, `iptables` or `systemctl`.
 
+## FRP transport renderer
+
+`hybrid_core/frp.py` is a clean TP27 renderer for the public FRP configuration surface used by the relay transports. It can render:
+
+- server bind + KCP bind + QUIC bind,
+- token authentication,
+- pool limits,
+- client `tcp`, `kcp`, `quic`, and `websocket` transports,
+- TCP and UDP proxy rows generated from the same five-service forwarding specs.
+
+This gives TP27 a source-controlled way to build KCP/QUIC relay candidates without copying Hashem's implementation.
+
+## SSH Hybrid renderer
+
+`hybrid_core/ssh_hybrid.py` implements the configuration side of the SSH-hybrid method:
+
+```text
+Foreign frpc -> 127.0.0.1:relay_port
+                  |
+                  | reverse OpenSSH -R
+                  v
+Iran 127.0.0.1:relay_port -> frps
+```
+
+The renderer produces a persistent SSH systemd unit and a restricted `authorized_keys` entry. The key is limited with `restrict`, `port-forwarding`, and a single `permitlisten=127.0.0.1:<relay_port>` permission. Host-key persistence uses a dedicated TP27 known-hosts file instead of writing to the normal root SSH profile.
+
+SSH Hybrid is intentionally a TCP fallback and is not considered a full WireGuard or L2TP carrier.
+
 ## Offline CLI
 
 `bin/tp27-hybridctl.py` is deliberately read-only/offline in v1.
@@ -114,7 +142,9 @@ Implemented in this branch:
 - protocol-specific TCP/UDP/L3 forwarding specs,
 - L2TP native ESP requirement,
 - proven Fast-WG config renderer,
+- FRP TCP/KCP/QUIC/WebSocket server/client config renderer,
+- restricted SSH Hybrid config/systemd renderer,
 - offline CLI,
 - unit tests and CI.
 
-The branch intentionally does **not** yet install binaries or mutate production networking. Runtime adapters for QUIC, KCP, WSS packet mode, TCPMux, Backhaul-compatible TUN and SSH Hybrid should implement the same driver contract and be tested in network namespaces before any panel provisioning path is allowed to call them.
+The branch intentionally does **not** yet install binaries or mutate production networking. The remaining runtime layer is the deployment/health adapter that places generated config, starts candidates in parallel, benchmarks them, and performs transactional cutover/rollback. WSS packet mode already has an existing TP27/GOST TUN core in the repository but still needs to be normalized behind the same Hybrid driver contract before production provisioning calls it. Backhaul-compatible TUN remains a separate implementation task because TP27 will not depend on a private `backhaul_premium` binary.
