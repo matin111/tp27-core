@@ -1,17 +1,24 @@
 {
-  "schema": 2,
+  "schema": 3,
   "product": "TwinPanel",
   "channel": "stable",
-  "version": "1.1.0-rc.2",
+  "version": "1.1.0-rc.21",
   "installable": true,
   "published": true,
-  "released_at": "2026-10-17T16:47:00Z",
+  "released_at": "2026-10-17T22:47:26Z",
   "repository_url": "https://github.com/matin111/twinpanel.git",
-  "source_sha": "39b630f0532c9c7cc2bee84ade557144da67aeaa",
+  "source_sha": "7e498d3391bf8cf633a5ee10d94742bea1079b16",
   "github_url": "https://github.com/matin111/twinpanel",
   "license_required": false,
+  "artifact": {
+    "format": "twinpanel-prebuilt-v1",
+    "arch": "x86_64",
+    "url": "https://github.com/matin111/twinpanel/releases/download/v1.1.0-rc.21/twinpanel-1.1.0-rc.21-linux-x86_64.tar.gz",
+    "sha256": "83a76523974abbcbeaf7fcac1aac30d3c06433f8b3689ca38b8476996fe7487f",
+    "size_bytes": 12486642
+  },
   "notes": {
-    "fa": "پل سازگاری برای نصب‌های 1.1.0-rc.1 که هنوز از مسیر قدیمی tp27-core برای دریافت مانیفست استفاده می‌کنند. بروزرسانی به 1.1.0-rc.2 و Commit تاییدشده TwinPanel قفل شده است.",
-    "en": "Compatibility bridge for 1.1.0-rc.1 installations that still read the legacy tp27-core manifest. Updates are pinned to TwinPanel 1.1.0-rc.2 and its validated source commit."
+    "fa": "پل سازگاری برای نصب‌های قدیمی TwinPanel که هنوز مانیفست را از tp27-core می‌خوانند. این پل اکنون به نسخه تأییدشده 1.1.0-rc.21 و artifact هش‌شده رسمی TwinPanel قفل شده است؛ نسخه شامل Smart Auto V21 و فعال‌سازی Production برای Transport Manager V12 است.",
+    "en": "Compatibility bridge for older TwinPanel installations that still read the release manifest from tp27-core. This bridge is now pinned to validated TwinPanel 1.1.0-rc.21 and its verified prebuilt artifact, including Smart Auto V21 and production activation for Transport Manager V12."
   }
 }
