@@ -105,6 +105,19 @@ The renderer produces a persistent SSH systemd unit and a restricted `authorized
 
 SSH Hybrid is intentionally a TCP fallback and is not considered a full WireGuard or L2TP carrier.
 
+## Public Backhaul renderer
+
+`hybrid_core/backhaul.py` renders configuration for the public Backhaul feature set rather than depending on Hashem's optional private `backhaul_premium` binary. It supports the public relay transports:
+
+- `tcp`
+- `tcpmux`
+- `ws`
+- `wss`
+- `wsmux`
+- `wssmux`
+
+The renderer deduplicates TCP/UDP twins that share the same service port and turns on Backhaul's UDP-over-transport mode when a service spec contains UDP. WSS requires explicit certificate/key paths. This renderer is useful for Cisco, OpenVPN, WireGuard UDP port relay, and Xray proxy traffic. It is **not** treated as a complete L2TP/IPsec L3 replacement because public Backhaul relay mode does not preserve native ESP/IP protocol 50.
+
 ## Offline CLI
 
 `bin/tp27-hybridctl.py` is deliberately read-only/offline in v1.
@@ -144,7 +157,8 @@ Implemented in this branch:
 - proven Fast-WG config renderer,
 - FRP TCP/KCP/QUIC/WebSocket server/client config renderer,
 - restricted SSH Hybrid config/systemd renderer,
+- public Backhaul TCP/TCPMux/WS/WSS/WSMux/WSSMux config renderer,
 - offline CLI,
 - unit tests and CI.
 
-The branch intentionally does **not** yet install binaries or mutate production networking. The remaining runtime layer is the deployment/health adapter that places generated config, starts candidates in parallel, benchmarks them, and performs transactional cutover/rollback. WSS packet mode already has an existing TP27/GOST TUN core in the repository but still needs to be normalized behind the same Hybrid driver contract before production provisioning calls it. Backhaul-compatible TUN remains a separate implementation task because TP27 will not depend on a private `backhaul_premium` binary.
+The branch intentionally does **not** yet install binaries or mutate production networking. The remaining runtime layer is the deployment/health adapter that places generated config, starts candidates in parallel, benchmarks them, and performs transactional cutover/rollback. WSS packet mode already has an existing TP27/GOST TUN core in the repository but still needs to be normalized behind the same Hybrid driver contract before production provisioning calls it. A true independent Backhaul-compatible TUN remains a separate implementation task because TP27 will not depend on a private `backhaul_premium` binary.
