@@ -2,23 +2,23 @@
   "schema": 3,
   "product": "TwinPanel",
   "channel": "stable",
-  "version": "1.1.0-rc.24",
+  "version": "1.1.0-rc.26",
   "installable": true,
   "published": true,
-  "released_at": "2026-10-17T23:31:22Z",
+  "released_at": "2026-10-17T23:47:44Z",
   "repository_url": "https://github.com/matin111/twinpanel.git",
-  "source_sha": "c4744fbfaf6e69b339d334f1df4850665f97a753",
+  "source_sha": "f3f21f6eb46ee5a16c94f9c67397a6688ef9b60a",
   "github_url": "https://github.com/matin111/twinpanel",
   "license_required": false,
   "artifact": {
     "format": "twinpanel-prebuilt-v1",
     "arch": "x86_64",
-    "url": "https://github.com/matin111/twinpanel/releases/download/v1.1.0-rc.24/twinpanel-1.1.0-rc.24-linux-x86_64.tar.gz",
-    "sha256": "ee514f7a5ff3300caf60376fc9875b32c4209972df3801b2eb50bc6d87008542",
-    "size_bytes": 12500675
+    "url": "https://github.com/matin111/twinpanel/releases/download/v1.1.0-rc.26/twinpanel-1.1.0-rc.26-linux-x86_64.tar.gz",
+    "sha256": "49240f76395e52d00acd9232f1fc7a5dac176c24c07033228dccba494f216be8",
+    "size_bytes": 12510122
   },
   "notes": {
-    "fa": "پل سازگاری نصب‌های قدیمی TwinPanel اکنون به نسخه تأییدشده 1.1.0-rc.24 و artifact رسمی هش‌شده قفل شده است. این نسخه شامل Smart Auto V21، Transport Manager V12 و Smart Auto Bootstrap V24 برای ساخت امن اولین Pair ایران→خارج در topology بدون ابهام است.",
-    "en": "Compatibility bridge for older TwinPanel installations is now pinned to validated TwinPanel 1.1.0-rc.24 and its verified prebuilt artifact, including Smart Auto V21, Transport Manager V12 and Smart Auto Bootstrap V24 for safely creating the first unambiguous Iran-to-Exit logical pair."
+    "fa": "پل سازگاری نصب‌های قدیمی TwinPanel اکنون به نسخه تأییدشده 1.1.0-rc.26 و artifact رسمی هش‌شده قفل شده است. این نسخه علاوه بر Smart Auto V21 و Bootstrap V24، صفحه «مسیرهای هوشمند» را برای GRE، GOST TUN/WSS، AmneziaWG و Netrix برمی‌گرداند و وضعیت سلامت، Qualification، پایداری، Ping و تست سرعت را همراه با نصب/بازسازی/حذف و انتخاب Smart Auto نمایش می‌دهد. کشف بروزرسانی نیز با چند منبع مقاوم‌تر شده است.",
+    "en": "Compatibility bridge for older TwinPanel installations is now pinned to validated TwinPanel 1.1.0-rc.26 and its verified prebuilt artifact. In addition to Smart Auto V21 and Bootstrap V24, this release restores the Smart Transports page for GRE, GOST TUN/WSS, AmneziaWG and Netrix with health, qualification, stability, latency, benchmark and scoped management controls, and hardens release discovery with multiple providers."
   }
 }
