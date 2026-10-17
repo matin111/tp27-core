@@ -17,6 +17,7 @@ from hybrid_core import (  # noqa: E402
     TransportKind,
     build_all_protocol_plans,
     build_plan,
+    driver_matrix,
 )
 
 
@@ -84,6 +85,11 @@ def cmd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_drivers(_args: argparse.Namespace) -> int:
+    print(json.dumps(driver_matrix(), ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tp27-hybridctl",
@@ -109,6 +115,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="exclude a transport; can be repeated",
     )
     plan.set_defaults(func=cmd_plan)
+
+    drivers = sub.add_parser("drivers", help="show runtime/config readiness for every Hybrid transport")
+    drivers.set_defaults(func=cmd_drivers)
     return parser
 
 
