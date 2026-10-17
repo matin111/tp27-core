@@ -45,7 +45,6 @@ __all__ = [
     "PolicyOptions",
     "PortMap",
     "RoutingPlan",
-    "SSHHYbridConfig",
     "SSHHybridConfig",
     "ServiceForwardingSpec",
     "ServiceProfile",
