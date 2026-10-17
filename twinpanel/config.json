@@ -1,0 +1,7 @@
+{
+  "product": "TwinPanel",
+  "license_api_url": "",
+  "release_channel": "stable",
+  "release_manifest_url": "https://raw.githubusercontent.com/matin111/tp27-core/main/twinpanel/releases/stable.json",
+  "github_url": "https://github.com/matin111/tp27-core"
+}
