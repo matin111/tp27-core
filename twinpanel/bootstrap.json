@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "product": "twinpanel",
+  "channel": "stable",
+  "license_api_url": "",
+  "license_public_key_url": "",
+  "release_manifest_url": "https://raw.githubusercontent.com/matin111/tp27-core/main/twinpanel/releases/stable.json",
+  "product_github_url": "https://github.com/matin111/tp27-core",
+  "enabled": false,
+  "message_fa": "سرویس انتشار عمومی TwinPanel هنوز فعال نشده است.",
+  "message_en": "The TwinPanel public distribution service is not enabled yet."
+}
