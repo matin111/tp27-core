@@ -6,6 +6,7 @@ from hybrid_core import (
     ServiceProtocol,
     TransportKind,
     build_all_protocol_plans,
+    build_overlay_pair,
     build_plan,
     build_service_spec,
     rank_candidates,
@@ -117,6 +118,26 @@ class HybridCorePlannerTests(unittest.TestCase):
                 ("udp", 8443),
             },
         )
+
+    def test_fast_wg_pair_matches_proven_overlay_shape(self):
+        pair = build_overlay_pair(
+            iran_private_key="iran-private",
+            iran_public_key="iran-public",
+            foreign_private_key="foreign-private",
+            foreign_public_key="foreign-public",
+            iran_address="10.250.177.2/30",
+            foreign_address="10.250.177.1/30",
+            foreign_carrier_endpoint="10.253.0.9:51888",
+            listen_port=51888,
+            mtu=1280,
+            keepalive=5,
+        )
+        rendered = pair.render()
+        self.assertIn("Address = 10.250.177.2/30", rendered["iran"])
+        self.assertIn("Endpoint = 10.253.0.9:51888", rendered["iran"])
+        self.assertIn("PersistentKeepalive = 5", rendered["iran"])
+        self.assertIn("ListenPort = 51888", rendered["foreign"])
+        self.assertNotIn("Endpoint =", rendered["foreign"])
 
 
 if __name__ == "__main__":
