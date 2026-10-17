@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import re
 import shlex
 
@@ -11,6 +12,7 @@ class SSHHybridConfig:
     remote_user: str = "root"
     remote_ssh_port: int = 22
     key_path: str = "/etc/tp27/keys/hybrid_ed25519"
+    known_hosts_path: str = "/etc/tp27/keys/known_hosts"
     relay_port: int = 55400
     server_alive_interval: int = 10
     server_alive_count_max: int = 3
@@ -26,6 +28,8 @@ class SSHHybridConfig:
             raise ValueError("relay_port must be 1024..65535")
         if not self.key_path.startswith("/"):
             raise ValueError("key_path must be absolute")
+        if not self.known_hosts_path.startswith("/"):
+            raise ValueError("known_hosts_path must be absolute")
         if not 1 <= int(self.server_alive_interval) <= 3600:
             raise ValueError("server_alive_interval must be 1..3600")
         if not 1 <= int(self.server_alive_count_max) <= 100:
@@ -70,12 +74,17 @@ def render_iran_systemd(config: SSHHybridConfig) -> str:
         "-o",
         "StrictHostKeyChecking=accept-new",
         "-o",
+        f"UserKnownHostsFile={config.known_hosts_path}",
+        "-o",
+        "GlobalKnownHostsFile=/dev/null",
+        "-o",
         "ClearAllForwardings=yes",
         "-R",
         f"127.0.0.1:{config.relay_port}:127.0.0.1:{config.relay_port}",
         target,
     ]
     exec_start = " ".join(shlex.quote(x) for x in command)
+    writable_dir = str(Path(config.known_hosts_path).parent)
     return f"""[Unit]
 Description=TP27 SSH Hybrid carrier
 After=network-online.target
@@ -92,8 +101,7 @@ LimitNOFILE=1048576
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
-ReadOnlyPaths=/
-ReadWritePaths=/run /var/log/tp27
+ReadWritePaths={writable_dir} /run
 
 [Install]
 WantedBy=multi-user.target
