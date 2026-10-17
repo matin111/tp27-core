@@ -1,12 +1,17 @@
 {
+  "schema": 2,
   "product": "TwinPanel",
   "channel": "stable",
-  "version": "1.1.0-rc.1",
-  "installable": false,
-  "released_at": "2026-10-17T14:00:00Z",
+  "version": "1.1.0-rc.2",
+  "installable": true,
+  "published": true,
+  "released_at": "2026-10-17T16:47:00Z",
+  "repository_url": "https://github.com/matin111/twinpanel.git",
+  "source_sha": "39b630f0532c9c7cc2bee84ade557144da67aeaa",
+  "github_url": "https://github.com/matin111/twinpanel",
+  "license_required": false,
   "notes": {
-    "fa": "نسخه 1.1.0-rc.1 در حال اعتبارسنجی نصب تمیز، بروزرسانی، Rollback و لایسنس است و هنوز برای بروزرسانی عمومی فعال نشده است.",
-    "en": "Version 1.1.0-rc.1 is validating clean install, update, rollback and licensing and is not yet enabled for public updates."
-  },
-  "github_url": "https://github.com/matin111/tp27-core"
+    "fa": "پل سازگاری برای نصب‌های 1.1.0-rc.1 که هنوز از مسیر قدیمی tp27-core برای دریافت مانیفست استفاده می‌کنند. بروزرسانی به 1.1.0-rc.2 و Commit تاییدشده TwinPanel قفل شده است.",
+    "en": "Compatibility bridge for 1.1.0-rc.1 installations that still read the legacy tp27-core manifest. Updates are pinned to TwinPanel 1.1.0-rc.2 and its validated source commit."
+  }
 }
