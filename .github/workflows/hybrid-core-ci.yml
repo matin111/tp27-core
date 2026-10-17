@@ -1,0 +1,33 @@
+name: Hybrid Core CI
+
+on:
+  push:
+    branches:
+      - "feat/hybrid-core-*"
+  pull_request:
+    paths:
+      - "hybrid_core/**"
+      - "bin/tp27-hybridctl.py"
+      - "bin/tp27-wss-l3.py"
+      - "tests/**"
+      - "config/hybrid-metrics.example.json"
+      - ".github/workflows/hybrid-core-ci.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile
+        run: python -m compileall -q hybrid_core bin/tp27-hybridctl.py bin/tp27-wss-l3.py tests
+      - name: Unit tests
+        run: python -m unittest discover -v -s tests -p 'test_*.py'
+      - name: Planner smoke test
+        run: python bin/tp27-hybridctl.py plan --protocol all --metrics config/hybrid-metrics.example.json > /tmp/hybrid-plan.json
+      - name: Driver readiness smoke test
+        run: python bin/tp27-hybridctl.py drivers > /tmp/hybrid-drivers.json
+      - name: Transaction smoke test
+        run: python bin/tp27-hybridctl.py rollout --protocol xray --current direct_gre --metrics config/hybrid-metrics.example.json > /tmp/hybrid-rollout.json
