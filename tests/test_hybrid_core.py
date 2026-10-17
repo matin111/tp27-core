@@ -7,6 +7,7 @@ from hybrid_core import (
     TransportKind,
     build_all_protocol_plans,
     build_plan,
+    build_service_spec,
     rank_candidates,
 )
 
@@ -81,6 +82,41 @@ class HybridCorePlannerTests(unittest.TestCase):
         )
         direct = next(row for row in ranked if row.transport == TransportKind.DIRECT_GRE)
         self.assertTrue(direct.compatible)
+
+    def test_cisco_maps_tcp_and_dtls_udp(self):
+        spec = build_service_spec(ServiceProtocol.CISCO, port=443)
+        rows = {(x.proto, x.listen_port, x.target_port) for x in spec.mappings}
+        self.assertEqual(rows, {("tcp", 443, 443), ("udp", 443, 443)})
+
+    def test_openvpn_dual_protocol_mapping(self):
+        spec = build_service_spec(ServiceProtocol.OPENVPN, port=1194)
+        rows = {(x.proto, x.listen_port) for x in spec.mappings}
+        self.assertEqual(rows, {("tcp", 1194), ("udp", 1194)})
+
+    def test_wireguard_is_udp_only(self):
+        spec = build_service_spec(ServiceProtocol.WIREGUARD, port=51820)
+        self.assertEqual(len(spec.mappings), 1)
+        self.assertEqual(spec.mappings[0].proto, "udp")
+
+    def test_l2tp_has_natt_ports_and_native_esp_requirement(self):
+        spec = build_service_spec(ServiceProtocol.L2TP)
+        ports = {(x.proto, x.listen_port) for x in spec.mappings}
+        self.assertEqual(ports, {("udp", 500), ("udp", 4500), ("udp", 1701)})
+        self.assertTrue(spec.requires_l3)
+        self.assertEqual(spec.ip_protocols, (50,))
+
+    def test_xray_can_map_multiple_tcp_udp_ports(self):
+        spec = build_service_spec(ServiceProtocol.XRAY, ports=(8080, 8443))
+        rows = {(x.proto, x.listen_port) for x in spec.mappings}
+        self.assertEqual(
+            rows,
+            {
+                ("tcp", 8080),
+                ("udp", 8080),
+                ("tcp", 8443),
+                ("udp", 8443),
+            },
+        )
 
 
 if __name__ == "__main__":
