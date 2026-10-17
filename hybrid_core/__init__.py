@@ -50,6 +50,7 @@ from .transaction import (
     choose_runtime_candidate,
     transaction_plan_dict,
 )
+from .wss_l3 import WSSL3Endpoint, WSSL3Pair, build_wss_l3_pair, render_systemd_unit as render_wss_l3_systemd
 
 __all__ = [
     "DRIVERS",
@@ -84,6 +85,8 @@ __all__ = [
     "TransactionPlan",
     "TransportCapabilities",
     "TransportKind",
+    "WSSL3Endpoint",
+    "WSSL3Pair",
     "WireGuardPeerConfig",
     "build_all_protocol_plans",
     "build_cutover_rules",
@@ -91,6 +94,7 @@ __all__ = [
     "build_plan",
     "build_service_spec",
     "build_transaction_plan",
+    "build_wss_l3_pair",
     "choose_runtime_candidate",
     "cisco_spec",
     "driver_descriptor",
@@ -108,6 +112,7 @@ __all__ = [
     "render_frps",
     "render_iran_systemd",
     "render_wg_quick",
+    "render_wss_l3_systemd",
     "rule_plan_dict",
     "score_candidate",
     "service_profile",
