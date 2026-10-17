@@ -1,5 +1,13 @@
 from .catalog import SERVICE_PROFILES, TRANSPORTS, service_profile, transport_capabilities
 from .fast_wg import FastWGPair, WireGuardPeerConfig, build_overlay_pair, render_wg_quick
+from .frp import (
+    FRPClientConfig,
+    FRPServerConfig,
+    FRPTransport,
+    render_frpc,
+    render_frps,
+    transport_port,
+)
 from .model import (
     CandidateScore,
     LinkMetrics,
@@ -22,17 +30,23 @@ from .services import (
     wireguard_spec,
     xray_spec,
 )
+from .ssh_hybrid import SSHHybridConfig, relay_addresses, render_authorized_key, render_iran_systemd
 
 __all__ = [
     "SERVICE_PROFILES",
     "TRANSPORTS",
     "CandidateScore",
+    "FRPClientConfig",
+    "FRPServerConfig",
+    "FRPTransport",
     "FastWGPair",
     "LinkMetrics",
     "Maturity",
     "PolicyOptions",
     "PortMap",
     "RoutingPlan",
+    "SSHHYbridConfig",
+    "SSHHybridConfig",
     "ServiceForwardingSpec",
     "ServiceProfile",
     "ServiceProtocol",
@@ -47,10 +61,16 @@ __all__ = [
     "l2tp_spec",
     "openvpn_spec",
     "rank_candidates",
+    "relay_addresses",
+    "render_authorized_key",
+    "render_frpc",
+    "render_frps",
+    "render_iran_systemd",
     "render_wg_quick",
     "score_candidate",
     "service_profile",
     "transport_capabilities",
+    "transport_port",
     "wireguard_spec",
     "xray_spec",
 ]
