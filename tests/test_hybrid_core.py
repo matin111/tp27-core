@@ -4,11 +4,13 @@ from hybrid_core import (
     BackhaulClientConfig,
     BackhaulServerConfig,
     BackhaulTransport,
+    DriverReadiness,
     FRPClientConfig,
     FRPServerConfig,
     FRPTransport,
     LinkMetrics,
     PolicyOptions,
+    RolloutPhase,
     SSHHybridConfig,
     ServiceProtocol,
     TransportKind,
@@ -16,6 +18,9 @@ from hybrid_core import (
     build_overlay_pair,
     build_plan,
     build_service_spec,
+    build_transaction_plan,
+    driver_descriptor,
+    driver_matrix,
     rank_candidates,
     render_authorized_key,
     render_backhaul_client,
@@ -218,6 +223,57 @@ class HybridCorePlannerTests(unittest.TestCase):
         )
         self.assertIn('remote_addr = "198.51.100.10:3080"', client)
         self.assertIn("connection_pool = 8", client)
+
+    def test_driver_matrix_covers_every_transport(self):
+        rows = driver_matrix()
+        self.assertEqual({row["transport"] for row in rows}, {x.value for x in TransportKind})
+        self.assertEqual(
+            driver_descriptor(TransportKind.FAST_WG).readiness,
+            DriverReadiness.PRODUCTION_PROVEN,
+        )
+        self.assertEqual(
+            driver_descriptor(TransportKind.QUIC).readiness,
+            DriverReadiness.CONFIG_READY,
+        )
+
+    def test_production_transaction_skips_config_only_quic(self):
+        metrics = {
+            TransportKind.FAST_WG: LinkMetrics(healthy=False),
+            TransportKind.QUIC: LinkMetrics(healthy=True, throughput_mbps=200, rtt_ms=50),
+            TransportKind.WSS_L3: LinkMetrics(healthy=True, throughput_mbps=40, rtt_ms=80),
+        }
+        plan = build_transaction_plan(
+            ServiceProtocol.XRAY,
+            metrics=metrics,
+            current_transport=TransportKind.DIRECT_GRE,
+        )
+        self.assertEqual(plan.candidate, TransportKind.WSS_L3)
+        self.assertEqual(plan.steps[0].phase, RolloutPhase.SNAPSHOT)
+        self.assertEqual(plan.steps[-1].phase, RolloutPhase.ROLLBACK)
+        self.assertTrue(any(step.rollback_required for step in plan.steps))
+
+    def test_lab_transaction_can_select_config_ready_quic(self):
+        metrics = {
+            TransportKind.FAST_WG: LinkMetrics(healthy=False),
+            TransportKind.QUIC: LinkMetrics(healthy=True, throughput_mbps=200, rtt_ms=50),
+            TransportKind.WSS_L3: LinkMetrics(healthy=True, throughput_mbps=40, rtt_ms=80),
+        }
+        plan = build_transaction_plan(
+            ServiceProtocol.XRAY,
+            metrics=metrics,
+            current_transport=TransportKind.DIRECT_GRE,
+            allow_config_ready_for_lab=True,
+        )
+        self.assertEqual(plan.candidate, TransportKind.QUIC)
+
+    def test_l2tp_transaction_never_selects_non_l3_runtime(self):
+        metrics = {
+            TransportKind.FAST_WG: LinkMetrics(healthy=False),
+            TransportKind.WSS_L3: LinkMetrics(healthy=True, throughput_mbps=30, rtt_ms=90),
+            TransportKind.QUIC: LinkMetrics(healthy=True, throughput_mbps=500, rtt_ms=20),
+        }
+        plan = build_transaction_plan(ServiceProtocol.L2TP, metrics=metrics)
+        self.assertEqual(plan.candidate, TransportKind.WSS_L3)
 
 
 if __name__ == "__main__":
