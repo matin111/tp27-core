@@ -59,10 +59,10 @@ DRIVERS: dict[TransportKind, DriverDescriptor] = {
     TransportKind.WSS_L3: DriverDescriptor(
         transport=TransportKind.WSS_L3,
         readiness=DriverReadiness.RUNTIME_PRESENT,
-        implementation="bin/tp27-gost-core.py / GOST TUN over WSS",
+        implementation="bin/tp27-wss-l3.py (native TUN over WebSocket/TLS)",
         l3=True,
         parallel_candidate=True,
-        notes="Runtime exists in TP27; must pass namespace and live-path validation before promotion.",
+        notes="Clean-room stdlib runtime exists; it must pass namespace and two-VPS lab validation before production promotion.",
     ),
     TransportKind.TCPMUX: DriverDescriptor(
         transport=TransportKind.TCPMUX,
