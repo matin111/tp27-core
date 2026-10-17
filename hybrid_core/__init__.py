@@ -6,6 +6,7 @@ from .backhaul import (
     render_backhaul_server,
 )
 from .catalog import SERVICE_PROFILES, TRANSPORTS, service_profile, transport_capabilities
+from .drivers import DRIVERS, DriverDescriptor, DriverReadiness, driver_descriptor, driver_matrix
 from .fast_wg import FastWGPair, WireGuardPeerConfig, build_overlay_pair, render_wg_quick
 from .frp import (
     FRPClientConfig,
@@ -40,12 +41,15 @@ from .services import (
 from .ssh_hybrid import SSHHybridConfig, relay_addresses, render_authorized_key, render_iran_systemd
 
 __all__ = [
+    "DRIVERS",
     "SERVICE_PROFILES",
     "TRANSPORTS",
     "BackhaulClientConfig",
     "BackhaulServerConfig",
     "BackhaulTransport",
     "CandidateScore",
+    "DriverDescriptor",
+    "DriverReadiness",
     "FRPClientConfig",
     "FRPServerConfig",
     "FRPTransport",
@@ -67,6 +71,8 @@ __all__ = [
     "build_plan",
     "build_service_spec",
     "cisco_spec",
+    "driver_descriptor",
+    "driver_matrix",
     "l2tp_spec",
     "openvpn_spec",
     "rank_candidates",
