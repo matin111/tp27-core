@@ -11,6 +11,16 @@ from .model import (
     TransportKind,
 )
 from .planner import build_all_protocol_plans, build_plan, rank_candidates, score_candidate
+from .services import (
+    PortMap,
+    ServiceForwardingSpec,
+    build_service_spec,
+    cisco_spec,
+    l2tp_spec,
+    openvpn_spec,
+    wireguard_spec,
+    xray_spec,
+)
 
 __all__ = [
     "SERVICE_PROFILES",
@@ -19,15 +29,23 @@ __all__ = [
     "LinkMetrics",
     "Maturity",
     "PolicyOptions",
+    "PortMap",
     "RoutingPlan",
+    "ServiceForwardingSpec",
     "ServiceProfile",
     "ServiceProtocol",
     "TransportCapabilities",
     "TransportKind",
     "build_all_protocol_plans",
     "build_plan",
+    "build_service_spec",
+    "cisco_spec",
+    "l2tp_spec",
+    "openvpn_spec",
     "rank_candidates",
     "score_candidate",
     "service_profile",
     "transport_capabilities",
+    "wireguard_spec",
+    "xray_spec",
 ]
