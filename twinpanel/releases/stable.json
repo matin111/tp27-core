@@ -2,23 +2,23 @@
   "schema": 3,
   "product": "TwinPanel",
   "channel": "stable",
-  "version": "1.1.0-rc.21",
+  "version": "1.1.0-rc.24",
   "installable": true,
   "published": true,
-  "released_at": "2026-10-17T22:47:26Z",
+  "released_at": "2026-10-17T23:31:22Z",
   "repository_url": "https://github.com/matin111/twinpanel.git",
-  "source_sha": "7e498d3391bf8cf633a5ee10d94742bea1079b16",
+  "source_sha": "c4744fbfaf6e69b339d334f1df4850665f97a753",
   "github_url": "https://github.com/matin111/twinpanel",
   "license_required": false,
   "artifact": {
     "format": "twinpanel-prebuilt-v1",
     "arch": "x86_64",
-    "url": "https://github.com/matin111/twinpanel/releases/download/v1.1.0-rc.21/twinpanel-1.1.0-rc.21-linux-x86_64.tar.gz",
-    "sha256": "83a76523974abbcbeaf7fcac1aac30d3c06433f8b3689ca38b8476996fe7487f",
-    "size_bytes": 12486642
+    "url": "https://github.com/matin111/twinpanel/releases/download/v1.1.0-rc.24/twinpanel-1.1.0-rc.24-linux-x86_64.tar.gz",
+    "sha256": "ee514f7a5ff3300caf60376fc9875b32c4209972df3801b2eb50bc6d87008542",
+    "size_bytes": 12500675
   },
   "notes": {
-    "fa": "پل سازگاری برای نصب‌های قدیمی TwinPanel که هنوز مانیفست را از tp27-core می‌خوانند. این پل اکنون به نسخه تأییدشده 1.1.0-rc.21 و artifact هش‌شده رسمی TwinPanel قفل شده است؛ نسخه شامل Smart Auto V21 و فعال‌سازی Production برای Transport Manager V12 است.",
-    "en": "Compatibility bridge for older TwinPanel installations that still read the release manifest from tp27-core. This bridge is now pinned to validated TwinPanel 1.1.0-rc.21 and its verified prebuilt artifact, including Smart Auto V21 and production activation for Transport Manager V12."
+    "fa": "پل سازگاری نصب‌های قدیمی TwinPanel اکنون به نسخه تأییدشده 1.1.0-rc.24 و artifact رسمی هش‌شده قفل شده است. این نسخه شامل Smart Auto V21، Transport Manager V12 و Smart Auto Bootstrap V24 برای ساخت امن اولین Pair ایران→خارج در topology بدون ابهام است.",
+    "en": "Compatibility bridge for older TwinPanel installations is now pinned to validated TwinPanel 1.1.0-rc.24 and its verified prebuilt artifact, including Smart Auto V21, Transport Manager V12 and Smart Auto Bootstrap V24 for safely creating the first unambiguous Iran-to-Exit logical pair."
   }
 }
