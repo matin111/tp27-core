@@ -17,7 +17,9 @@ from hybrid_core import (  # noqa: E402
     TransportKind,
     build_all_protocol_plans,
     build_plan,
+    build_transaction_plan,
     driver_matrix,
+    transaction_plan_dict,
 )
 
 
@@ -44,12 +46,12 @@ def _load_metrics(path: str | None) -> dict[TransportKind, LinkMetrics]:
 
 
 def _options(args: argparse.Namespace) -> PolicyOptions:
-    blocked = frozenset(TransportKind(x) for x in (args.block or []))
+    blocked = frozenset(TransportKind(x) for x in (getattr(args, "block", None) or []))
     return PolicyOptions(
-        require_encryption=not args.allow_plain,
-        allow_experimental=args.allow_experimental,
-        prefer_outer_udp=not args.prefer_tcp,
-        max_fallbacks=args.max_fallbacks,
+        require_encryption=not getattr(args, "allow_plain", False),
+        allow_experimental=getattr(args, "allow_experimental", False),
+        prefer_outer_udp=not getattr(args, "prefer_tcp", False),
+        max_fallbacks=getattr(args, "max_fallbacks", 3),
         blocked_transports=blocked,
     )
 
@@ -90,6 +92,34 @@ def cmd_drivers(_args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rollout(args: argparse.Namespace) -> int:
+    metrics = _load_metrics(args.metrics)
+    current = TransportKind(args.current) if args.current else None
+    plan = build_transaction_plan(
+        ServiceProtocol(args.protocol),
+        metrics=metrics,
+        options=_options(args),
+        current_transport=current,
+        allow_config_ready_for_lab=args.lab,
+    )
+    print(json.dumps(transaction_plan_dict(plan), ensure_ascii=False, indent=2))
+    return 0 if plan.can_roll_out else 3
+
+
+def _add_policy_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--metrics", help="JSON file containing measured link metrics")
+    parser.add_argument("--allow-plain", action="store_true", help="allow unencrypted carriers such as direct GRE")
+    parser.add_argument("--allow-experimental", action="store_true")
+    parser.add_argument("--prefer-tcp", action="store_true", help="do not give outer-UDP transports the preference bonus")
+    parser.add_argument("--max-fallbacks", type=int, default=3)
+    parser.add_argument(
+        "--block",
+        action="append",
+        choices=[x.value for x in TransportKind],
+        help="exclude a transport; can be repeated",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tp27-hybridctl",
@@ -103,21 +133,22 @@ def build_parser() -> argparse.ArgumentParser:
         default="all",
         choices=["all"] + [p.value for p in ServiceProtocol],
     )
-    plan.add_argument("--metrics", help="JSON file containing measured link metrics")
-    plan.add_argument("--allow-plain", action="store_true", help="allow unencrypted carriers such as direct GRE")
-    plan.add_argument("--allow-experimental", action="store_true")
-    plan.add_argument("--prefer-tcp", action="store_true", help="do not give outer-UDP transports the preference bonus")
-    plan.add_argument("--max-fallbacks", type=int, default=3)
-    plan.add_argument(
-        "--block",
-        action="append",
-        choices=[x.value for x in TransportKind],
-        help="exclude a transport; can be repeated",
-    )
+    _add_policy_args(plan)
     plan.set_defaults(func=cmd_plan)
 
     drivers = sub.add_parser("drivers", help="show runtime/config readiness for every Hybrid transport")
     drivers.set_defaults(func=cmd_drivers)
+
+    rollout = sub.add_parser("rollout", help="render a safe candidate rollout transaction; never executes it")
+    rollout.add_argument("--protocol", required=True, choices=[p.value for p in ServiceProtocol])
+    rollout.add_argument("--current", choices=[x.value for x in TransportKind])
+    rollout.add_argument(
+        "--lab",
+        action="store_true",
+        help="allow config-ready transports in a lab plan; production plans require a runtime-ready driver",
+    )
+    _add_policy_args(rollout)
+    rollout.set_defaults(func=cmd_rollout)
     return parser
 
 
