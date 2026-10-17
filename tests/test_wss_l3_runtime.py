@@ -1,5 +1,6 @@
 import importlib.util
 import socket
+import sys
 import threading
 import unittest
 from pathlib import Path
@@ -10,6 +11,7 @@ MODULE_PATH = ROOT / "bin" / "tp27-wss-l3.py"
 SPEC = importlib.util.spec_from_file_location("tp27_wss_l3", MODULE_PATH)
 assert SPEC and SPEC.loader
 wss = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = wss
 SPEC.loader.exec_module(wss)
 
 
