@@ -11,7 +11,7 @@ class WireGuardPeerConfig:
     address: str
     peer_public_key: str
     peer_address: str
-    listen_port: int
+    listen_port: int | None = None
     endpoint: str | None = None
     mtu: int = 1280
     persistent_keepalive: int | None = None
@@ -25,7 +25,7 @@ class WireGuardPeerConfig:
             raise ValueError("peer_address must be inside the local WireGuard subnet")
         if str(peer) == str(iface.ip):
             raise ValueError("peer_address cannot equal local address")
-        if not 1 <= int(self.listen_port) <= 65535:
+        if self.listen_port is not None and not 1 <= int(self.listen_port) <= 65535:
             raise ValueError("listen_port must be 1..65535")
         if not 1000 <= int(self.mtu) <= 1420:
             raise ValueError("WireGuard MTU must be 1000..1420")
@@ -45,14 +45,19 @@ def render_wg_quick(config: WireGuardPeerConfig) -> str:
     lines = [
         "[Interface]",
         f"Address = {config.address}",
-        f"ListenPort = {int(config.listen_port)}",
-        f"PrivateKey = {config.private_key.strip()}",
-        f"MTU = {int(config.mtu)}",
-        "",
-        "[Peer]",
-        f"PublicKey = {config.peer_public_key.strip()}",
-        f"AllowedIPs = {config.peer_address}/32",
     ]
+    if config.listen_port is not None:
+        lines.append(f"ListenPort = {int(config.listen_port)}")
+    lines.extend(
+        [
+            f"PrivateKey = {config.private_key.strip()}",
+            f"MTU = {int(config.mtu)}",
+            "",
+            "[Peer]",
+            f"PublicKey = {config.peer_public_key.strip()}",
+            f"AllowedIPs = {config.peer_address}/32",
+        ]
+    )
     if config.endpoint:
         lines.append(f"Endpoint = {config.endpoint.strip()}")
     if config.persistent_keepalive is not None:
@@ -97,13 +102,14 @@ def build_overlay_pair(
     foreign_address: str,
     foreign_carrier_endpoint: str,
     listen_port: int,
+    iran_listen_port: int | None = None,
     mtu: int = 1280,
     keepalive: int = 5,
 ) -> FastWGPair:
     """Build the proven TP27 pattern: WireGuard carried by an existing path.
 
     foreign_carrier_endpoint is normally the foreign carrier/underlay address,
-    for example a GRE/FOU inner address such as 10.253.0.9:51888.  No network
+    for example a GRE/FOU inner address such as 10.253.0.9:51888. No network
     changes are performed here; the function only validates and renders config.
     """
     iran_iface = ipaddress.ip_interface(iran_address)
@@ -117,7 +123,7 @@ def build_overlay_pair(
         address=str(iran_iface),
         peer_public_key=foreign_public_key,
         peer_address=str(foreign_iface.ip),
-        listen_port=0xC000 | (int(listen_port) & 0x0FFF),
+        listen_port=iran_listen_port,
         endpoint=foreign_carrier_endpoint,
         mtu=mtu,
         persistent_keepalive=keepalive,
@@ -133,4 +139,6 @@ def build_overlay_pair(
         mtu=mtu,
         persistent_keepalive=None,
     )
-    return FastWGPair(iran=iran, foreign=foreign)
+    pair = FastWGPair(iran=iran, foreign=foreign)
+    pair.validate()
+    return pair
