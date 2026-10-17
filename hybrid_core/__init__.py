@@ -1,3 +1,10 @@
+from .backhaul import (
+    BackhaulClientConfig,
+    BackhaulServerConfig,
+    BackhaulTransport,
+    render_backhaul_client,
+    render_backhaul_server,
+)
 from .catalog import SERVICE_PROFILES, TRANSPORTS, service_profile, transport_capabilities
 from .fast_wg import FastWGPair, WireGuardPeerConfig, build_overlay_pair, render_wg_quick
 from .frp import (
@@ -35,6 +42,9 @@ from .ssh_hybrid import SSHHybridConfig, relay_addresses, render_authorized_key,
 __all__ = [
     "SERVICE_PROFILES",
     "TRANSPORTS",
+    "BackhaulClientConfig",
+    "BackhaulServerConfig",
+    "BackhaulTransport",
     "CandidateScore",
     "FRPClientConfig",
     "FRPServerConfig",
@@ -62,6 +72,8 @@ __all__ = [
     "rank_candidates",
     "relay_addresses",
     "render_authorized_key",
+    "render_backhaul_client",
+    "render_backhaul_server",
     "render_frpc",
     "render_frps",
     "render_iran_systemd",
