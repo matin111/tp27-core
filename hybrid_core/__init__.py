@@ -29,6 +29,7 @@ from .model import (
     TransportKind,
 )
 from .planner import build_all_protocol_plans, build_plan, rank_candidates, score_candidate
+from .rules import CutoverRulePlan, RuleCommand, build_cutover_rules, rule_plan_dict
 from .services import (
     PortMap,
     ServiceForwardingSpec,
@@ -59,6 +60,7 @@ __all__ = [
     "BackhaulTransport",
     "CandidateDecision",
     "CandidateScore",
+    "CutoverRulePlan",
     "DriverDescriptor",
     "DriverReadiness",
     "FRPClientConfig",
@@ -74,6 +76,7 @@ __all__ = [
     "RolloutPhase",
     "RolloutStep",
     "RoutingPlan",
+    "RuleCommand",
     "SSHHybridConfig",
     "ServiceForwardingSpec",
     "ServiceProfile",
@@ -83,6 +86,7 @@ __all__ = [
     "TransportKind",
     "WireGuardPeerConfig",
     "build_all_protocol_plans",
+    "build_cutover_rules",
     "build_overlay_pair",
     "build_plan",
     "build_service_spec",
@@ -104,6 +108,7 @@ __all__ = [
     "render_frps",
     "render_iran_systemd",
     "render_wg_quick",
+    "rule_plan_dict",
     "score_candidate",
     "service_profile",
     "transaction_plan_dict",
