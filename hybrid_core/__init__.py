@@ -16,6 +16,7 @@ from .frp import (
     render_frps,
     transport_port,
 )
+from .health import HealthGateResult, ProbeObservation, evaluate_protocol_gate, evaluate_service_gate
 from .model import (
     CandidateScore,
     LinkMetrics,
@@ -64,10 +65,12 @@ __all__ = [
     "FRPServerConfig",
     "FRPTransport",
     "FastWGPair",
+    "HealthGateResult",
     "LinkMetrics",
     "Maturity",
     "PolicyOptions",
     "PortMap",
+    "ProbeObservation",
     "RolloutPhase",
     "RolloutStep",
     "RoutingPlan",
@@ -88,6 +91,8 @@ __all__ = [
     "cisco_spec",
     "driver_descriptor",
     "driver_matrix",
+    "evaluate_protocol_gate",
+    "evaluate_service_gate",
     "l2tp_spec",
     "openvpn_spec",
     "rank_candidates",
