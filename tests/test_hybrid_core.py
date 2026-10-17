@@ -1,8 +1,12 @@
 import unittest
 
 from hybrid_core import (
+    FRPClientConfig,
+    FRPServerConfig,
+    FRPTransport,
     LinkMetrics,
     PolicyOptions,
+    SSHHybridConfig,
     ServiceProtocol,
     TransportKind,
     build_all_protocol_plans,
@@ -10,6 +14,10 @@ from hybrid_core import (
     build_plan,
     build_service_spec,
     rank_candidates,
+    render_authorized_key,
+    render_frpc,
+    render_frps,
+    render_iran_systemd,
 )
 
 
@@ -138,6 +146,49 @@ class HybridCorePlannerTests(unittest.TestCase):
         self.assertIn("PersistentKeepalive = 5", rendered["iran"])
         self.assertIn("ListenPort = 51888", rendered["foreign"])
         self.assertNotIn("Endpoint =", rendered["foreign"])
+
+    def test_frp_quic_renderer_handles_tcp_and_udp_service_rows(self):
+        server = render_frps(
+            FRPServerConfig(
+                bind_addr="10.253.0.2",
+                bind_port=25000,
+                token="test-token",
+            )
+        )
+        self.assertIn("kcpBindPort = 25000", server)
+        self.assertIn("quicBindPort = 25000", server)
+
+        service = build_service_spec(ServiceProtocol.CISCO, port=443)
+        client = render_frpc(
+            FRPClientConfig(
+                server_addr="10.253.0.2",
+                server_port=25000,
+                token="test-token",
+                transport=FRPTransport.QUIC,
+            ),
+            service.mappings,
+        )
+        self.assertIn('transport.protocol = "quic"', client)
+        self.assertIn('type = "tcp"', client)
+        self.assertIn('type = "udp"', client)
+        self.assertIn("remotePort = 443", client)
+
+    def test_ssh_hybrid_is_restricted_to_one_reverse_relay_listener(self):
+        pub = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey tp27"
+        auth = render_authorized_key(pub, 55400)
+        self.assertIn('permitlisten="127.0.0.1:55400"', auth)
+        self.assertIn("restrict,port-forwarding", auth)
+
+        unit = render_iran_systemd(
+            SSHHybridConfig(
+                remote_host="203.0.113.20",
+                remote_ssh_port=22027,
+                relay_port=55400,
+            )
+        )
+        self.assertIn("-R 127.0.0.1:55400:127.0.0.1:55400", unit)
+        self.assertIn("ExitOnForwardFailure=yes", unit)
+        self.assertIn("UserKnownHostsFile=/etc/tp27/keys/known_hosts", unit)
 
 
 if __name__ == "__main__":
