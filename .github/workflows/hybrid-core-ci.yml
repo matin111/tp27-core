@@ -8,7 +8,7 @@ on:
     paths:
       - "hybrid_core/**"
       - "bin/tp27-hybridctl.py"
-      - "tests/test_hybrid_core.py"
+      - "tests/**"
       - "config/hybrid-metrics.example.json"
       - ".github/workflows/hybrid-core-ci.yml"
 
@@ -21,8 +21,12 @@ jobs:
         with:
           python-version: "3.12"
       - name: Compile
-        run: python -m compileall -q hybrid_core bin/tp27-hybridctl.py tests/test_hybrid_core.py
+        run: python -m compileall -q hybrid_core bin/tp27-hybridctl.py tests
       - name: Unit tests
-        run: python -m unittest -v tests.test_hybrid_core
+        run: python -m unittest discover -v -s tests -p 'test_*.py'
       - name: Planner smoke test
         run: python bin/tp27-hybridctl.py plan --protocol all --metrics config/hybrid-metrics.example.json > /tmp/hybrid-plan.json
+      - name: Driver readiness smoke test
+        run: python bin/tp27-hybridctl.py drivers > /tmp/hybrid-drivers.json
+      - name: Transaction smoke test
+        run: python bin/tp27-hybridctl.py rollout --protocol xray --current direct_gre --metrics config/hybrid-metrics.example.json > /tmp/hybrid-rollout.json
