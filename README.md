@@ -1,4 +1,46 @@
-# TP27 Core
+# TP27 Core + TwinPanel
+
+این مخزن دو مسیر عمومی مستقل دارد:
+
+- **TwinPanel**: مسیر عمومی نصب، نسخه، بروزرسانی و اتصال به سرویس لایسنس/توزیع.
+- **TP27 Core**: کنترلر مستقل ساخت و مدیریت Tunnel بین سرور ایران و سرورهای خارج.
+
+## TwinPanel — نصب رسمی
+
+صفحه اصلی نصب و Releaseهای TwinPanel اکنون در همین مخزن و زیر مسیر `twinpanel/` قرار دارد.
+
+نسخه فعلی Candidate:
+
+```text
+1.1.0-rc.1
+```
+
+دستور نصب رسمی:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/matin111/tp27-core/main/twinpanel/install.sh | sudo bash
+```
+
+تا زمانی که License/Distribution API نهایی منتشر و Release Gate کامل پاس نشده باشد، نصب عمومی عمداً قبل از هر تغییر روی سرور متوقف می‌شود. بعد از فعال‌شدن سرویس مرکزی، همین یک دستور برای نصب Trial هفت‌روزه یا نصب با License Key استفاده می‌شود و مشتری نیازی به GitHub Token یا دسترسی به مخزن خصوصی TwinPanel ندارد.
+
+مسیرهای عمومی TwinPanel:
+
+```text
+twinpanel/README.md
+twinpanel/config.json
+twinpanel/releases/stable.json
+twinpanel/install.sh
+```
+
+جزئیات نصب و بروزرسانی:
+
+```text
+https://github.com/matin111/tp27-core/tree/main/twinpanel
+```
+
+---
+
+## TP27 Core
 
 TP27 یک کنترلر مستقل برای ساخت و مدیریت چند Tunnel بین **یک سرور ایران** و **چند سرور خارج** است. پروژه از TwinPanel مستقل است و سرویس‌های VPN اصلی سرور خارج را Restart یا حذف نمی‌کند.
 
