@@ -39,6 +39,15 @@ from .services import (
     xray_spec,
 )
 from .ssh_hybrid import SSHHybridConfig, relay_addresses, render_authorized_key, render_iran_systemd
+from .transaction import (
+    CandidateDecision,
+    RolloutPhase,
+    RolloutStep,
+    TransactionPlan,
+    build_transaction_plan,
+    choose_runtime_candidate,
+    transaction_plan_dict,
+)
 
 __all__ = [
     "DRIVERS",
@@ -47,6 +56,7 @@ __all__ = [
     "BackhaulClientConfig",
     "BackhaulServerConfig",
     "BackhaulTransport",
+    "CandidateDecision",
     "CandidateScore",
     "DriverDescriptor",
     "DriverReadiness",
@@ -58,11 +68,14 @@ __all__ = [
     "Maturity",
     "PolicyOptions",
     "PortMap",
+    "RolloutPhase",
+    "RolloutStep",
     "RoutingPlan",
     "SSHHybridConfig",
     "ServiceForwardingSpec",
     "ServiceProfile",
     "ServiceProtocol",
+    "TransactionPlan",
     "TransportCapabilities",
     "TransportKind",
     "WireGuardPeerConfig",
@@ -70,6 +83,8 @@ __all__ = [
     "build_overlay_pair",
     "build_plan",
     "build_service_spec",
+    "build_transaction_plan",
+    "choose_runtime_candidate",
     "cisco_spec",
     "driver_descriptor",
     "driver_matrix",
@@ -86,6 +101,7 @@ __all__ = [
     "render_wg_quick",
     "score_candidate",
     "service_profile",
+    "transaction_plan_dict",
     "transport_capabilities",
     "transport_port",
     "wireguard_spec",
