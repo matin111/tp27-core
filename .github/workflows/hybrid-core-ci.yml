@@ -1,0 +1,28 @@
+name: Hybrid Core CI
+
+on:
+  push:
+    branches:
+      - "feat/hybrid-core-*"
+  pull_request:
+    paths:
+      - "hybrid_core/**"
+      - "bin/tp27-hybridctl.py"
+      - "tests/test_hybrid_core.py"
+      - "config/hybrid-metrics.example.json"
+      - ".github/workflows/hybrid-core-ci.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile
+        run: python -m compileall -q hybrid_core bin/tp27-hybridctl.py tests/test_hybrid_core.py
+      - name: Unit tests
+        run: python -m unittest -v tests.test_hybrid_core
+      - name: Planner smoke test
+        run: python bin/tp27-hybridctl.py plan --protocol all --metrics config/hybrid-metrics.example.json > /tmp/hybrid-plan.json
