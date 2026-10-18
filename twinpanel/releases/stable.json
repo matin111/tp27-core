@@ -2,23 +2,23 @@
   "schema": 3,
   "product": "TwinPanel",
   "channel": "stable",
-  "version": "1.1.0-rc.28",
+  "version": "1.1.0-rc.31",
   "installable": true,
   "published": true,
-  "released_at": "2026-10-18T00:10:44Z",
+  "released_at": "2026-10-18T00:39:58Z",
   "repository_url": "https://github.com/matin111/twinpanel.git",
-  "source_sha": "c2d33f0e3cca7701c54b057914b9370be0463391",
+  "source_sha": "02a7ce77f8a2a9f6c55738965c27856269c92a2b",
   "github_url": "https://github.com/matin111/twinpanel",
   "license_required": false,
   "artifact": {
     "format": "twinpanel-prebuilt-v1",
     "arch": "x86_64",
-    "url": "https://github.com/matin111/twinpanel/releases/download/v1.1.0-rc.28/twinpanel-1.1.0-rc.28-linux-x86_64.tar.gz",
-    "sha256": "69ccd5eab95c4832f18b86709d0dca1a06ed514546a9aa27db58fb2f5fef775e",
-    "size_bytes": 12539482
+    "url": "https://github.com/matin111/twinpanel/releases/download/v1.1.0-rc.31/twinpanel-1.1.0-rc.31-linux-x86_64.tar.gz",
+    "sha256": "bbe819b857440b292d7c1922da3bdfaba149b4ac4c5dd8248068e4e5305d207e",
+    "size_bytes": 12588629
   },
   "notes": {
-    "fa": "پل سازگاری نصب‌های قدیمی TwinPanel اکنون به نسخه تأییدشده 1.1.0-rc.28 و artifact رسمی هش‌شده قفل شده است. این نسخه خطای Not Found بخش «اتصال‌های عبوری» را با بازگرداندن Backend Service Connections برطرف می‌کند، Reconcile امن Xray را با حفظ UUID برمی‌گرداند و تعمیر خروج واقعی TP2027 را فقط پس از تست واقعی فعال می‌کند؛ اگر TP2027 تایید نشود مسیر سالم فعلی مانند SSH Relay بدون تغییر حفظ می‌شود. اصلاحات Smart Transports، کشف مقاوم بروزرسانی و تغییرات تاییدشده صفحه اشتراک‌ها نیز حفظ شده‌اند.",
-    "en": "Compatibility bridge for older TwinPanel installations is now pinned to validated TwinPanel 1.1.0-rc.28 and its verified prebuilt artifact. This release fixes the Service Connections Not Found regression, restores UUID-preserving Xray reconciliation, and makes TP2027 real-egress repair verification-gated while preserving healthy fallbacks such as SSH Relay when TP2027 cannot be verified. Smart Transports, resilient update discovery, and the latest verified subscriptions-page fixes are preserved."
+    "fa": "پل سازگاری نصب‌های قدیمی TwinPanel اکنون به نسخه تاییدشده 1.1.0-rc.31 قفل شده است. سیاست نهایی Xray دوباره WebSocket TLS، HTTPUpgrade TLS و VLESS TCP TLS را به کاربر تحویل می‌دهد؛ gRPC Reality، XHTTP Reality و VLESS Legacy/plain فقط برای Rollback و Diagnostic داخلی باقی می‌مانند. Runtime دامنه Xray، TCP TLS V39، سازگاری V44 و preflight listener روی lineage فعلی بازگشته‌اند و UUIDها، listenerهای قدیمی، کلیدها و تنظیمات سالم حفظ می‌شوند.",
+    "en": "The legacy TwinPanel updater bridge is now pinned to validated 1.1.0-rc.31. The final customer Xray policy again delivers WebSocket TLS, HTTPUpgrade TLS and VLESS TCP TLS, while gRPC Reality, XHTTP Reality and legacy/plain VLESS remain internal-only for rollback and diagnostics. The Xray-domain runtime, V39 TCP TLS engine, V44 compatibility and listener preflight are restored on the current lineage while preserving existing UUIDs, legacy listeners, keys and healthy settings."
   }
 }
