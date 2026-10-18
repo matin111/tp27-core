@@ -2,23 +2,23 @@
   "schema": 3,
   "product": "TwinPanel",
   "channel": "stable",
-  "version": "1.1.0-rc.33",
+  "version": "1.1.0-rc.36",
   "installable": true,
   "published": true,
-  "released_at": "2026-10-18T10:07:44Z",
+  "released_at": "2026-10-18T10:49:21Z",
   "repository_url": "https://github.com/matin111/twinpanel.git",
-  "source_sha": "d69c1c727ff9e30ad3f0271f428b63adb40b7c7a",
+  "source_sha": "10459c52c94b5546956f47cde15c3ce019330dd6",
   "github_url": "https://github.com/matin111/twinpanel",
   "license_required": false,
   "artifact": {
     "format": "twinpanel-prebuilt-v1",
     "arch": "x86_64",
-    "url": "https://github.com/matin111/twinpanel/releases/download/v1.1.0-rc.33/twinpanel-1.1.0-rc.33-linux-x86_64.tar.gz",
-    "sha256": "db6de9fadce4045dd62a95ca30772e086237b36fe59140999ad52f1eab84b484",
-    "size_bytes": 12613646
+    "url": "https://github.com/matin111/twinpanel/releases/download/v1.1.0-rc.36/twinpanel-1.1.0-rc.36-linux-x86_64.tar.gz",
+    "sha256": "71a639f8c8364377fa32c88c7bb11451814fb663173347c5f643375812156787",
+    "size_bytes": 12615925
   },
   "notes": {
-    "fa": "پل سازگاری نصب‌های قدیمی TwinPanel اکنون به نسخه تاییدشده 1.1.0-rc.33 قفل شده است. دامنه اختصاصی V2Ray/Xray برای ساخت و مدیریت نودهای خروجی برگشته و xray_domain مستقل از دامنه عمومی نود باقی می‌ماند. خطای Xray 26.3.x در تشخیص فایل موقت Modern Xray نیز با استفاده از نام فایل دارای پسوند واقعی .json رفع شده است. سیاست کاربر WebSocket TLS، HTTPUpgrade TLS و VLESS TCP TLS حفظ شده و gRPC Reality، XHTTP Reality و VLESS Legacy فقط داخلی هستند. اصلاح rc.32 برای نمایش‌ندادن HTML خام 502/503/504 و جلوگیری از تکرار عملیات تغییردهنده نیز حفظ شده است.",
-    "en": "The legacy TwinPanel updater bridge is now pinned to validated 1.1.0-rc.33. Dedicated V2Ray/Xray domain controls are restored for Exit-node provisioning and management while xray_domain remains independent from the Node public/general domain. The Xray 26.3.x Modern temporary-config format failure is fixed by using a real .json suffix. The customer policy remains WebSocket TLS, HTTPUpgrade TLS and VLESS TCP TLS, while gRPC Reality, XHTTP Reality and VLESS Legacy stay internal-only. The rc.32 raw 502/503/504 shielding and mutation-safety behavior are retained."
+    "fa": "پل سازگاری نصب‌های قدیمی TwinPanel اکنون به نسخه تاییدشده 1.1.0-rc.36 قفل شده است. در پنجره مدیریت نود خروجی، دامنه عمومی نود و دامنه اختصاصی V2Ray/Xray به‌صورت دو کنترل مستقل نمایش داده می‌شوند؛ برای نودهای Exit با V2Ray فعال می‌توان دامنه Xray را جداگانه ذخیره کرد و با «ذخیره و آماده‌سازی TLS» گواهی و پروفایل‌های Xray را آماده نمود. وضعیت دامنه موثر، TLS و fallback نیز همان‌جا قابل مشاهده است. تمام اصلاحات rc.35 برای بازیابی امن Provision و جلوگیری از ساخت Credential/Peer تکراری، اصلاحات پرداخت و سفارش و سازگاری Xray 26.3.x حفظ شده‌اند.",
+    "en": "The legacy TwinPanel updater bridge is now pinned to validated 1.1.0-rc.36. Exit-node management now exposes the Node public domain and the dedicated V2Ray/Xray domain as separate controls. Exit nodes with V2Ray enabled can save a dedicated Xray domain independently and use Save & prepare TLS to reconcile certificates and Xray profiles, with effective domain, TLS and fallback status visible in place. All rc.35 safe provisioning recovery and duplicate credential/peer prevention, payment/order fixes and Xray 26.3.x compatibility are retained."
   }
 }
