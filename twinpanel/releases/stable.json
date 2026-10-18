@@ -2,23 +2,23 @@
   "schema": 3,
   "product": "TwinPanel",
   "channel": "stable",
-  "version": "1.1.0-rc.26",
+  "version": "1.1.0-rc.28",
   "installable": true,
   "published": true,
-  "released_at": "2026-10-17T23:47:44Z",
+  "released_at": "2026-10-18T00:10:44Z",
   "repository_url": "https://github.com/matin111/twinpanel.git",
-  "source_sha": "f3f21f6eb46ee5a16c94f9c67397a6688ef9b60a",
+  "source_sha": "c2d33f0e3cca7701c54b057914b9370be0463391",
   "github_url": "https://github.com/matin111/twinpanel",
   "license_required": false,
   "artifact": {
     "format": "twinpanel-prebuilt-v1",
     "arch": "x86_64",
-    "url": "https://github.com/matin111/twinpanel/releases/download/v1.1.0-rc.26/twinpanel-1.1.0-rc.26-linux-x86_64.tar.gz",
-    "sha256": "49240f76395e52d00acd9232f1fc7a5dac176c24c07033228dccba494f216be8",
-    "size_bytes": 12510122
+    "url": "https://github.com/matin111/twinpanel/releases/download/v1.1.0-rc.28/twinpanel-1.1.0-rc.28-linux-x86_64.tar.gz",
+    "sha256": "69ccd5eab95c4832f18b86709d0dca1a06ed514546a9aa27db58fb2f5fef775e",
+    "size_bytes": 12539482
   },
   "notes": {
-    "fa": "پل سازگاری نصب‌های قدیمی TwinPanel اکنون به نسخه تأییدشده 1.1.0-rc.26 و artifact رسمی هش‌شده قفل شده است. این نسخه علاوه بر Smart Auto V21 و Bootstrap V24، صفحه «مسیرهای هوشمند» را برای GRE، GOST TUN/WSS، AmneziaWG و Netrix برمی‌گرداند و وضعیت سلامت، Qualification، پایداری، Ping و تست سرعت را همراه با نصب/بازسازی/حذف و انتخاب Smart Auto نمایش می‌دهد. کشف بروزرسانی نیز با چند منبع مقاوم‌تر شده است.",
-    "en": "Compatibility bridge for older TwinPanel installations is now pinned to validated TwinPanel 1.1.0-rc.26 and its verified prebuilt artifact. In addition to Smart Auto V21 and Bootstrap V24, this release restores the Smart Transports page for GRE, GOST TUN/WSS, AmneziaWG and Netrix with health, qualification, stability, latency, benchmark and scoped management controls, and hardens release discovery with multiple providers."
+    "fa": "پل سازگاری نصب‌های قدیمی TwinPanel اکنون به نسخه تأییدشده 1.1.0-rc.28 و artifact رسمی هش‌شده قفل شده است. این نسخه خطای Not Found بخش «اتصال‌های عبوری» را با بازگرداندن Backend Service Connections برطرف می‌کند، Reconcile امن Xray را با حفظ UUID برمی‌گرداند و تعمیر خروج واقعی TP2027 را فقط پس از تست واقعی فعال می‌کند؛ اگر TP2027 تایید نشود مسیر سالم فعلی مانند SSH Relay بدون تغییر حفظ می‌شود. اصلاحات Smart Transports، کشف مقاوم بروزرسانی و تغییرات تاییدشده صفحه اشتراک‌ها نیز حفظ شده‌اند.",
+    "en": "Compatibility bridge for older TwinPanel installations is now pinned to validated TwinPanel 1.1.0-rc.28 and its verified prebuilt artifact. This release fixes the Service Connections Not Found regression, restores UUID-preserving Xray reconciliation, and makes TP2027 real-egress repair verification-gated while preserving healthy fallbacks such as SSH Relay when TP2027 cannot be verified. Smart Transports, resilient update discovery, and the latest verified subscriptions-page fixes are preserved."
   }
 }
