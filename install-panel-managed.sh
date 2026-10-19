@@ -55,7 +55,7 @@ done
 fetch panel/provision_resilient.py "$PANEL/provision_resilient.py"
 fetch panel/provision_multicore.py "$PANEL/provision_gre.py"
 
-for f in index.html login.html style.css app.js fast-ui.js agent-manage.js premium.css premium-ui.js runtime-refresh-fix.js benchmark-ui.js benchmark-auto.js server-speed-ui.js speed-recovery-fix.js safe-switch-ui.js self-update.js; do
+for f in index.html login.html style.css app.js fast-ui.js agent-manage.js premium.css premium-ui.js runtime-refresh-fix.js benchmark-ui.js benchmark-auto.js server-speed-ui.js speed-recovery-fix.js safe-switch-ui.js self-update.js ui-stability.js; do
   fetch "panel/static/$f" "$STATIC/$f"
 done
 
@@ -63,11 +63,14 @@ python3 - "$STATIC/index.html" <<'PY'
 from pathlib import Path
 p=Path('/opt/tp27-panel/static/index.html')
 s=p.read_text(encoding='utf-8')
-tag='<script src="/static/safe-switch-ui.js"></script>'
-if tag not in s:
-    anchor='<script src="/static/self-update.js"></script>'
-    s=s.replace(anchor, tag+'\n'+anchor) if anchor in s else s.replace('</body>', tag+'\n</body>')
-    p.write_text(s,encoding='utf-8')
+safe='<script src="/static/safe-switch-ui.js"></script>'
+self_update='<script src="/static/self-update.js"></script>'
+stability='<script src="/static/ui-stability.js"></script>'
+if safe not in s:
+    s=s.replace(self_update, safe+'\n'+self_update) if self_update in s else s.replace('</body>', safe+'\n</body>')
+if stability not in s:
+    s=s.replace('</body>', stability+'\n</body>')
+p.write_text(s,encoding='utf-8')
 PY
 
 # Keep the live tp27-panel.service untouched so a trusted IP certificate path
