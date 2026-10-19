@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import asyncio
 import sys
 import unittest
 from pathlib import Path
@@ -62,7 +61,7 @@ class FastBuilderV2Tests(unittest.TestCase):
 
         with patch.object(multicore, 'JOBS', fake_jobs), \
              patch.object(multicore, 'job_set', side_effect=fake_job_set), \
-             patch.object(multicore.time, 'monotonic', side_effect=[10.0, 10.125]):
+             patch.object(multicore.time, 'monotonic', return_value=10.125):
             payload = multicore._finish_timing('job1', timings, 10.0)
 
         self.assertEqual(payload['version'], 2)
