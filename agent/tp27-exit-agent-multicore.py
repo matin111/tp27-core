@@ -5,6 +5,7 @@ from pathlib import Path
 BASE_AGENT = Path('/opt/tp27-exit-agent/tp27-exit-agent.py')
 GOST_ADDON = Path('/opt/tp27-exit-agent/tp27_gost_addon.py')
 OPENVPN_ADDON = Path('/opt/tp27-exit-agent/tp27_openvpn_addon.py')
+BENCHMARK_ADDON = Path('/opt/tp27-exit-agent/tp27_benchmark_addon.py')
 
 
 def load(path, name):
@@ -23,6 +24,9 @@ if GOST_ADDON.exists():
 if OPENVPN_ADDON.exists():
     OPENVPN = load(OPENVPN_ADDON, 'tp27_openvpn_addon')
     OPENVPN.install(BASE)
+if BENCHMARK_ADDON.exists():
+    BENCHMARK = load(BENCHMARK_ADDON, 'tp27_benchmark_addon')
+    BENCHMARK.install(BASE)
 
 if __name__ == '__main__':
     BASE.main()
