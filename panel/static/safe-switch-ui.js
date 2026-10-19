@@ -1,9 +1,13 @@
 (()=>{
 'use strict';
 
+function rowFor(id){
+  try{return (currentStatus.exits||[]).find(x=>x.id===id)||null}catch(_){return null}
+}
+
 async function run(id,button){
   if(!id||button.dataset.safeBusy==='1')return;
-  const row=(window.currentStatus&&currentStatus.exits||[]).find(x=>x.id===id);
+  const row=rowFor(id);
   const current=String((row&&row.transport)||(row&&row.mode)||'GRE').toLowerCase();
   const target=current==='gre-fou'?'GRE Native':'GRE/UDP FOU';
   if(!confirm(`Tunnel «${id}» به ${target} تعویض شود؟\nمسیر فعلی تا سالم شدن مسیر جدید حذف نمی‌شود.`))return;
@@ -14,7 +18,7 @@ async function run(id,button){
     const result=await api('/api/exits/'+encodeURIComponent(id)+'/switch',{method:'POST',body:'{}'});
     const job=document.getElementById('job');
     if(job)job.textContent='تعویض امن شروع شد؛ مسیر قبلی همچنان فعال است...';
-    if(typeof closeTunnelManage==='function')closeTunnelManage();
+    if(typeof closeTunnelManage==='function'&&button.id==='upgradeFastBtn')closeTunnelManage();
     if(typeof pollJob==='function')pollJob(result.job_id,0);
   }catch(e){
     alert('تعویض امن شروع نشد: '+(e.message||e));
@@ -26,6 +30,7 @@ async function run(id,button){
 
 function bind(){
   document.querySelectorAll('.premium-rebuild-btn').forEach(button=>{
+    if(button.dataset.safeBusy==='1')return;
     const card=button.closest('.tunnel-card');
     const id=card&&card.dataset?card.dataset.exitId:'';
     button.textContent='تعویض امن';
@@ -33,11 +38,12 @@ function bind(){
     button.onclick=()=>run(id,button);
   });
   const button=document.getElementById('upgradeFastBtn');
-  if(button){
+  if(button&&button.dataset.safeBusy!=='1'){
     let id='';try{id=managedTunnelId||''}catch(_){ }
     button.classList.remove('hidden');
     button.disabled=false;
     button.textContent='تعویض امن Transport';
+    button.title='بدون حذف اولیه Tunnel فعلی';
     button.onclick=()=>run(id,button);
   }
 }
