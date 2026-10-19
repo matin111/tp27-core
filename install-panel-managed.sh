@@ -38,8 +38,29 @@ install -d -m 755 "$PANEL" "$STATIC" /usr/local/lib/tp27
 install -d -m 700 /etc/tp27 /var/lib/tp27-panel-updater /var/backups/tp27-panel /var/log/tp27/panel-jobs
 
 fetch() {
-  local src="$1" dst="$2"
-  curl -fsSL --connect-timeout 10 --max-time 90 "$RAW/$src" -o "$dst"
+  local src="$1" dst="$2" tmp
+  tmp="${dst}.tp27-download.$$"
+  rm -f "$tmp"
+  echo "FETCH $src"
+  if ! curl -fL \
+      --retry 6 \
+      --retry-all-errors \
+      --retry-delay 2 \
+      --connect-timeout 20 \
+      --max-time 180 \
+      --speed-time 30 \
+      --speed-limit 1024 \
+      "$RAW/$src" -o "$tmp"; then
+    rm -f "$tmp"
+    echo "ERROR: download failed after retries: $src" >&2
+    return 1
+  fi
+  if [[ ! -s "$tmp" ]]; then
+    rm -f "$tmp"
+    echo "ERROR: empty download: $src" >&2
+    return 1
+  fi
+  mv -f "$tmp" "$dst"
 }
 
 echo "===== TP27 MANAGED PANEL UPDATE ====="

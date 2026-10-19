@@ -148,19 +148,26 @@ ln -sfn "$BACKUP" "$BACKUP_ROOT/latest-successful"
 INSTALLER="$(mktemp /tmp/tp27-panel-update.XXXXXX.sh)"
 trap 'rm -f "$INSTALLER"' EXIT
 
-write_state downloading 'در حال دریافت نسخه جدید از GitHub' "$JOB_ID" "$TARGET" "$BACKUP_NAME" false
+write_state downloading 'در حال دریافت نسخه جدید از GitHub با Retry خودکار' "$JOB_ID" "$TARGET" "$BACKUP_NAME" false
 set +e
-curl -fsSL --connect-timeout 10 --max-time 90 \
+curl -fL \
+  --retry 6 \
+  --retry-all-errors \
+  --retry-delay 2 \
+  --connect-timeout 20 \
+  --max-time 180 \
+  --speed-time 30 \
+  --speed-limit 1024 \
   "$REPO_RAW/$TARGET/install-panel-managed.sh" -o "$INSTALLER"
 CURL_RC=$?
 set -e
-if [[ "$CURL_RC" -ne 0 ]]; then
-  write_state failed 'دریافت نسخه جدید ناموفق بود؛ هیچ فایل فعالی تغییر نکرد' "$JOB_ID" "$TARGET" "$BACKUP_NAME" false
+if [[ "$CURL_RC" -ne 0 || ! -s "$INSTALLER" ]]; then
+  write_state failed 'دریافت نسخه جدید پس از چند تلاش ناموفق بود؛ هیچ فایل فعالی تغییر نکرد' "$JOB_ID" "$TARGET" "$BACKUP_NAME" false
   exit 1
 fi
 chmod 700 "$INSTALLER"
 
-write_state installing 'در حال نصب نسخه جدید؛ Tunnelهای فعال Restart نمی‌شوند' "$JOB_ID" "$TARGET" "$BACKUP_NAME" false
+write_state installing 'در حال نصب نسخه جدید؛ دانلود فایل‌ها Retry خودکار دارد و Tunnelهای فعال Restart نمی‌شوند' "$JOB_ID" "$TARGET" "$BACKUP_NAME" false
 set +e
 TP27_REPO_RAW="$REPO_RAW/$TARGET" \
 TP27_INSTALL_COMMIT="$TARGET" \
