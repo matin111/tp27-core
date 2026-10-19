@@ -10,8 +10,28 @@ UPDATER=/usr/local/lib/tp27/tp27-panel-self-update
 [[ "$EUID" -eq 0 ]] || { echo "ERROR: run as root"; exit 1; }
 [[ -d "$PANEL" && -x "$PANEL/venv/bin/python" ]] || { echo "ERROR: TP27 panel is not installed"; exit 2; }
 
+wait_for_apt() {
+  local waited=0 max_wait="${TP27_APT_WAIT_SECONDS:-900}" busy=0
+  while (( waited < max_wait )); do
+    busy=0
+    if command -v fuser >/dev/null 2>&1; then
+      if fuser /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/cache/apt/archives/lock >/dev/null 2>&1; then busy=1; fi
+    elif pgrep -x apt >/dev/null 2>&1 || pgrep -x apt-get >/dev/null 2>&1 || pgrep -x dpkg >/dev/null 2>&1 || pgrep -f '[u]nattended-upgrade' >/dev/null 2>&1; then
+      busy=1
+    fi
+    (( busy == 0 )) && return 0
+    (( waited == 0 )) && echo "APT/DPKG busy; waiting safely..."
+    sleep 5
+    waited=$((waited+5))
+  done
+  echo "ERROR: apt/dpkg remained busy for ${max_wait}s" >&2
+  return 1
+}
+
 export DEBIAN_FRONTEND=noninteractive
+wait_for_apt
 apt-get update -qq
+wait_for_apt
 apt-get install -y -qq curl ca-certificates iperf3 util-linux >/dev/null
 
 install -d -m 755 "$PANEL" "$STATIC" /usr/local/lib/tp27
@@ -39,10 +59,13 @@ for f in index.html login.html style.css app.js fast-ui.js agent-manage.js premi
   fetch "panel/static/$f" "$STATIC/$f"
 done
 
-fetch systemd/tp27-panel.service /etc/systemd/system/tp27-panel.service
+# Keep the live tp27-panel.service untouched so a trusted IP certificate path
+# already patched into ExecStart can never be replaced by the repository default.
 fetch systemd/tp27-ports-reconcile.service /etc/systemd/system/tp27-ports-reconcile.service
 fetch systemd/tp27-plain-control.service /etc/systemd/system/tp27-plain-control.service
 fetch systemd/tp27-benchmark.service /etc/systemd/system/tp27-benchmark.service
+fetch systemd/tp27-link@.service /etc/systemd/system/tp27-link@.service
+fetch systemd/tp27-framed@.service /etc/systemd/system/tp27-framed@.service
 
 fetch bin/tp27-link-mtls /usr/local/lib/tp27/tp27-link
 fetch bin/tp27-link-dispatcher /usr/local/lib/tp27/tp27-link-dispatcher
@@ -94,11 +117,12 @@ systemctl enable tp27-panel.service >/dev/null 2>&1 || true
 systemctl enable tp27-ports-reconcile.service >/dev/null 2>&1 || true
 systemctl enable tp27-benchmark.service >/dev/null 2>&1 || true
 
+# No tp27-link@ or tp27-framed@ service is restarted here.
 systemctl restart tp27-panel.service
 systemctl restart tp27-ports-reconcile.service || true
 systemctl restart tp27-benchmark.service || true
 
-# Control-plane Agent connections may use this service. Restart only if it already exists/enabled.
+# Agent control reconnects automatically; a short control-plane restart does not touch data planes.
 if systemctl cat tp27-plain-control.service >/dev/null 2>&1; then
   systemctl restart tp27-plain-control.service || true
 fi
