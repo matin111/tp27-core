@@ -22,6 +22,8 @@ UPDATER = Path('/usr/local/lib/tp27/tp27-panel-self-update')
 REPO = 'matin111/tp27-core'
 SHA_RE = re.compile(r'^[0-9a-f]{40}$')
 TERMINAL = {'done', 'failed', 'rolled_back'}
+LATEST_CACHE = {'sha': None, 'at': 0.0}
+LATEST_TTL = 60
 
 
 def _guard(request: Request):
@@ -52,7 +54,11 @@ def _current_version():
     return value if SHA_RE.fullmatch(value) else 'unknown'
 
 
-def _latest_sha(timeout=8):
+def _latest_sha(timeout=8, force=False):
+    now = time.monotonic()
+    cached = str(LATEST_CACHE.get('sha') or '')
+    if not force and SHA_RE.fullmatch(cached) and now - float(LATEST_CACHE.get('at') or 0) < LATEST_TTL:
+        return cached
     req = urllib.request.Request(
         f'https://api.github.com/repos/{REPO}/commits/main',
         headers={
@@ -64,10 +70,14 @@ def _latest_sha(timeout=8):
         with urllib.request.urlopen(req, timeout=timeout) as response:
             data = json.loads(response.read().decode('utf-8'))
     except Exception as exc:
+        if SHA_RE.fullmatch(cached):
+            return cached
         raise RuntimeError(f'بررسی GitHub ناموفق بود: {exc}')
     sha = str(data.get('sha') or '').strip().lower()
     if not SHA_RE.fullmatch(sha):
         raise RuntimeError('SHA معتبر از GitHub دریافت نشد')
+    LATEST_CACHE['sha'] = sha
+    LATEST_CACHE['at'] = now
     return sha
 
 
@@ -87,7 +97,7 @@ def _backups(limit=8):
         return []
     rows = []
     for path in sorted(BACKUP_ROOT.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
-        if not path.is_dir() or not (path / 'system.tar.gz').exists():
+        if path.is_symlink() or not path.is_dir() or not (path / 'system.tar.gz').exists():
             continue
         before = ''
         try:
@@ -146,7 +156,7 @@ async def update_status(request: Request):
 async def update_check(request: Request):
     _guard(request)
     try:
-        latest = _latest_sha()
+        latest = _latest_sha(force=True)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     current = _current_version()
@@ -164,7 +174,7 @@ async def update_apply(request: Request):
     if state.get('state') not in TERMINAL | {'idle', None}:
         raise HTTPException(status_code=409, detail='یک عملیات بروزرسانی در حال اجراست')
     try:
-        target = _latest_sha()
+        target = _latest_sha(force=True)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     current = _current_version()
