@@ -12,11 +12,148 @@ html.tp27-ui-stabilizing body.tp27-premium .wrap{visibility:hidden!important}
 html.tp27-ui-stabilizing body.tp27-premium:before{content:'TP27 Control';position:fixed;inset:0;display:grid;place-items:center;z-index:99999;color:var(--p-muted);font:700 14px Tahoma,Arial,sans-serif;letter-spacing:.3px;pointer-events:none}
 .tp27-refresh-shadow{position:absolute!important;z-index:20!important;pointer-events:none!important;margin-top:0!important}
 .tp27-refresh-live-hidden{visibility:hidden!important}
-.tp27-premium .tunnel-card .exit-main{width:100%;min-width:0}
-.tp27-premium .tunnel-card .badges{width:100%;display:flex!important;flex-wrap:wrap!important;gap:6px!important;align-items:center;justify-content:flex-start}
-.tp27-premium .tunnel-card .badge{display:inline-flex!important;align-items:center;justify-content:space-between;gap:7px;min-width:128px;white-space:nowrap;direction:ltr;text-align:left}
-.tp27-premium .tunnel-card .badge b{direction:rtl;text-align:right}
-@media(max-width:760px){.tp27-premium .tunnel-card .badge{min-width:calc(50% - 4px);flex:1 1 calc(50% - 4px)}}
+
+/* ============================================================
+   TP27 TUNNEL CARD 2027
+   Compact control-tile layout: identity -> mappings -> metrics -> actions.
+   ============================================================ */
+.tp27-premium #exitList{align-items:stretch}
+.tp27-premium .tunnel-card{
+  display:grid!important;
+  grid-template-columns:minmax(0,1fr)!important;
+  grid-template-rows:auto auto!important;
+  gap:0!important;
+  min-height:0!important;
+  padding:0!important;
+  overflow:hidden!important;
+  position:relative!important;
+  border-radius:18px!important;
+  background:linear-gradient(180deg,color-mix(in srgb,var(--p-surface-2) 98%,transparent),color-mix(in srgb,var(--p-surface) 96%,transparent))!important;
+}
+.tp27-premium .tunnel-card:before{
+  content:'';
+  position:absolute;
+  inset:0 0 auto 0;
+  height:2px;
+  background:linear-gradient(90deg,transparent,var(--p-accent),#22d3ee,transparent);
+  opacity:.55;
+  pointer-events:none;
+}
+.tp27-premium .tunnel-card .exit-main{
+  width:100%;
+  min-width:0;
+  padding:15px 16px 12px!important;
+  gap:8px!important;
+}
+.tp27-premium .tunnel-card .exit-main>div:first-child{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  min-height:24px;
+}
+.tp27-premium .tunnel-card .exit-main>div:first-child b{
+  font-size:15px;
+  letter-spacing:-.15px;
+}
+.tp27-premium .tunnel-card .exit-main>.muted{
+  font-size:11px!important;
+  line-height:1.6;
+  opacity:.9;
+}
+.tp27-premium .tunnel-card .badges{
+  width:100%;
+  display:flex!important;
+  flex-wrap:wrap!important;
+  gap:5px!important;
+  align-items:center;
+  justify-content:flex-start;
+  margin-top:2px!important;
+  padding-top:9px!important;
+  border-top:1px dashed color-mix(in srgb,var(--p-border) 78%,transparent);
+}
+.tp27-premium .tunnel-card .badge{
+  display:inline-flex!important;
+  align-items:center;
+  justify-content:flex-start;
+  gap:6px;
+  min-width:0!important;
+  width:auto!important;
+  flex:0 0 auto!important;
+  white-space:nowrap;
+  direction:ltr;
+  text-align:left;
+  padding:5px 8px!important;
+  border-radius:9px!important;
+  font-size:10px!important;
+  background:color-mix(in srgb,var(--p-surface-3) 88%,transparent)!important;
+}
+.tp27-premium .tunnel-card .badge b{direction:rtl;text-align:right;font-size:10px}
+.tp27-premium .tunnel-card .premium-card-meta{
+  margin-top:1px!important;
+  gap:5px!important;
+}
+.tp27-premium .tunnel-card .premium-card-meta .premium-kpi{
+  padding:4px 7px!important;
+  background:var(--p-accent-soft)!important;
+  border-color:color-mix(in srgb,var(--p-accent) 26%,var(--p-border))!important;
+  font-size:10px!important;
+}
+.tp27-premium .tunnel-card .bm-strip{
+  display:grid!important;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:6px!important;
+  width:100%;
+  margin-top:2px!important;
+  padding-top:9px!important;
+  border-top:1px solid color-mix(in srgb,var(--p-border) 72%,transparent);
+}
+.tp27-premium .tunnel-card .bm-strip .bm-chip{
+  min-width:0;
+  min-height:31px;
+  display:flex!important;
+  align-items:center;
+  justify-content:center;
+  border-radius:10px!important;
+  padding:5px 6px!important;
+  background:color-mix(in srgb,var(--p-bg) 38%,var(--p-surface-2))!important;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.tp27-premium .tunnel-card .bm-strip .bm-chip:only-child{grid-column:1/-1;justify-content:flex-start}
+.tp27-premium .tunnel-card .tunnel-actions{
+  width:100%;
+  align-self:auto!important;
+  display:grid!important;
+  grid-template-columns:repeat(6,minmax(0,1fr));
+  gap:6px!important;
+  padding:10px 12px 12px!important;
+  margin:0!important;
+  border-top:1px solid var(--p-border);
+  background:color-mix(in srgb,var(--p-bg) 30%,var(--p-surface-2));
+}
+.tp27-premium .tunnel-card .tunnel-actions .btn{
+  min-width:0!important;
+  width:100%!important;
+  padding:7px 5px!important;
+  border-radius:9px!important;
+  font-size:10px!important;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.tp27-premium .tunnel-card .tunnel-actions .primary{box-shadow:none!important}
+.tp27-premium .tunnel-card .tunnel-actions .bm-btn{border-color:#22d3ee55!important}
+.tp27-premium .tunnel-card .tunnel-actions .premium-rebuild-btn{border-color:#8b5cf666!important}
+.tp27-premium .tunnel-card:hover{transform:translateY(-2px)!important;box-shadow:0 16px 36px #00000026!important}
+@media(max-width:1250px){
+  .tp27-premium .tunnel-card .tunnel-actions{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media(max-width:760px){
+  .tp27-premium .tunnel-card .bm-strip{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .tp27-premium .tunnel-card .tunnel-actions{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .tp27-premium .tunnel-card .badge{max-width:100%}
+}
 `;
 document.head.appendChild(style);
 document.documentElement.classList.add('tp27-ui-stabilizing');
