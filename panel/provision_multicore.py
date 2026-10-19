@@ -4,6 +4,7 @@ import ipaddress
 import os
 import re
 import secrets
+import time
 from pathlib import Path
 
 import agent_control
@@ -30,6 +31,9 @@ GOST_INSTALLER = Path('/usr/local/lib/tp27/tp27-gost-install.sh')
 GOST_CORE = Path('/usr/local/lib/tp27/tp27-gost-core.py')
 GOST_DISPATCHER = Path('/usr/local/lib/tp27/tp27-link-dispatcher')
 OPENVPN_CORE = Path('/usr/local/lib/tp27/tp27-openvpn-core')
+TCP_PREFLIGHT_TIMEOUT = 0.8
+OPENVPN_LOCAL_SETTLE = 0.25
+GOST_LOCAL_SETTLE = 0.35
 _BUILD_LOCK = asyncio.Lock()
 
 
@@ -37,6 +41,100 @@ def _job_last_text(job_id):
     job = JOBS.get(job_id) or {}
     rows = job.get('messages') or []
     return str(rows[-1].get('text') or '') if rows else ''
+
+
+def _elapsed_ms(started):
+    return max(0, int(round((time.monotonic() - started) * 1000)))
+
+
+def _record_timing(job_id, timings, stage, started, log=True, **meta):
+    entry = {'stage': stage, 'ms': _elapsed_ms(started)}
+    entry.update({k: v for k, v in meta.items() if v is not None})
+    timings.append(entry)
+    if log:
+        suffix = ' '.join(f'{k}={v}' for k, v in entry.items() if k not in {'stage', 'ms'})
+        text = f"TIMING_V2 stage={stage} ms={entry['ms']}"
+        if suffix:
+            text += ' ' + suffix
+        job_set(job_id, message=text)
+    return entry
+
+
+def _finish_timing(job_id, timings, build_started):
+    payload = {
+        'version': 2,
+        'total_ms': _elapsed_ms(build_started),
+        'stages': list(timings),
+    }
+    job = JOBS.get(job_id) or {}
+    result = dict(job.get('result') or {})
+    result['timing_v2'] = payload
+    job_set(job_id, result=result)
+    return payload
+
+
+async def _tcp_probe(endpoint, port, timeout=TCP_PREFLIGHT_TIMEOUT):
+    started = time.monotonic()
+    writer = None
+    status = 'unknown'
+    error = None
+    try:
+        _reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(endpoint, int(port)),
+            timeout=float(timeout),
+        )
+        # A completed TCP handshake means something already owns the port.
+        # Provisioning would fail its bind check, so this candidate can be
+        # skipped without touching the Exit host.
+        status = 'open'
+    except ConnectionRefusedError:
+        # RST is the strongest cheap signal for a reachable host with no TCP
+        # listener on this port. Prefer these candidates before timeouts.
+        status = 'refused'
+    except asyncio.TimeoutError:
+        status = 'timeout'
+    except OSError as exc:
+        status = 'unknown'
+        error = exc.__class__.__name__
+    finally:
+        if writer is not None:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+    return {
+        'port': int(port),
+        'status': status,
+        'ms': _elapsed_ms(started),
+        'error': error,
+    }
+
+
+async def _preflight_tcp_candidates(endpoint, ports):
+    started = time.monotonic()
+    unique = tuple(dict.fromkeys(int(p) for p in ports))
+    rows = await asyncio.gather(*(_tcp_probe(endpoint, port) for port in unique))
+    return {row['port']: row for row in rows}, _elapsed_ms(started)
+
+
+def _prioritize_tcp_ports(candidates, probes):
+    candidates = tuple(int(p) for p in candidates)
+    if not probes:
+        return candidates
+    preferred = []
+    unknown = []
+    for port in candidates:
+        status = str((probes.get(port) or {}).get('status') or 'unknown')
+        if status == 'open':
+            # Already occupied/listening on the remote host; every current TCP
+            # fallback requires exclusive bind, so avoid a guaranteed failure.
+            continue
+        if status == 'refused':
+            preferred.append(port)
+        else:
+            unknown.append(port)
+    return tuple(preferred + unknown)
 
 
 def _write_text_atomic(path, text, mode=0o600):
@@ -145,7 +243,7 @@ async def _build_openvpn(agent_id, eid, iface, iran_ip, endpoint,
         listen_port, static_key, agent_id,
     )
     _start_local_openvpn(eid)
-    await asyncio.sleep(1)
+    await asyncio.sleep(OPENVPN_LOCAL_SETTLE)
     healthy, ping_text = await legacy._health_peer(iface, remote_addr, tries=8)
     return healthy, ping_text, remote
 
@@ -258,7 +356,7 @@ async def _build_gost(agent_id, eid, iface, iran_ip, endpoint,
         remote['server_cert_pem'], agent_id,
     )
     _start_local_gost(eid)
-    await asyncio.sleep(1.25)
+    await asyncio.sleep(GOST_LOCAL_SETTLE)
     healthy, ping_text = await legacy._health_peer(iface, remote_addr, tries=7)
     return healthy, ping_text, remote
 
@@ -353,25 +451,84 @@ def _save_success(job_id, core, eid, iface, endpoint, iran_ip, local_ip,
 
 async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
                                   mtu=DEFAULT_MTU, mappings=None):
-    # Start with native kernel transports. If they are asymmetric/filtered,
-    # prefer the independently validated OpenVPN P2P/TCP transport before the
-    # experimental GOST and Framed-TLS engines.
+    # Fast Builder V2 keeps all real provisioning sequential and transactional.
+    # Only the read-only TCP reachability probes run in parallel while the
+    # kernel GRE/FOU stage is being evaluated.
     async with _BUILD_LOCK:
+        build_started = time.monotonic()
+        timings = []
         original_tls_ports = tuple(legacy.TLS_PORT_CANDIDATES)
+        probe_task = None
+
+        probe_agent = get_agent(agent_id)
+        probe_endpoint = str((probe_agent or {}).get('public_ip') or '').strip()
+        try:
+            if probe_agent and probe_agent.get('online') and ipaddress.ip_address(probe_endpoint).version == 4:
+                probe_ports = tuple(dict.fromkeys(
+                    OPENVPN_PORT_CANDIDATES + GOST_PORT_CANDIDATES + original_tls_ports
+                ))
+                probe_task = asyncio.create_task(
+                    _preflight_tcp_candidates(probe_endpoint, probe_ports)
+                )
+        except Exception:
+            probe_task = None
+
         legacy.TLS_PORT_CANDIDATES = ()
+        kernel_started = time.monotonic()
         try:
             await legacy.provision_gre_via_agent(
                 job_id, agent_id, requested_id=requested_id, mtu=mtu, mappings=mappings
             )
         finally:
             legacy.TLS_PORT_CANDIDATES = original_tls_ports
+        _record_timing(job_id, timings, 'kernel_transports', kernel_started, log=False)
 
         if (JOBS.get(job_id) or {}).get('state') == 'done':
+            if probe_task is not None and not probe_task.done():
+                probe_task.cancel()
+                try:
+                    await probe_task
+                except asyncio.CancelledError:
+                    pass
+            _finish_timing(job_id, timings, build_started)
             return
 
         previous_error = _job_last_text(job_id)
         if 'هیچ Transport دوطرفه ONLINE نشد' not in previous_error:
+            if probe_task is not None and not probe_task.done():
+                probe_task.cancel()
+                try:
+                    await probe_task
+                except asyncio.CancelledError:
+                    pass
+            _finish_timing(job_id, timings, build_started)
             return
+
+        probes = {}
+        if probe_task is not None:
+            try:
+                probes, probe_ms = await probe_task
+                timings.append({'stage': 'tcp_preflight', 'ms': probe_ms})
+                counts = {
+                    state: sum(1 for row in probes.values() if row.get('status') == state)
+                    for state in ('refused', 'open', 'timeout', 'unknown')
+                }
+                job_set(
+                    job_id,
+                    message=(
+                        'PREFLIGHT_V2 TCP read-only · '
+                        f"ready={counts['refused']} occupied={counts['open']} "
+                        f"timeout={counts['timeout']} unknown={counts['unknown']}"
+                    ),
+                )
+            except Exception as exc:
+                timings.append({'stage': 'tcp_preflight', 'ms': 0, 'outcome': 'fail-open'})
+                job_set(job_id, message=f'PREFLIGHT_V2 ناموفق بود؛ ترتیب فعلی حفظ شد: {exc}')
+                probes = {}
+
+        openvpn_ports = _prioritize_tcp_ports(OPENVPN_PORT_CANDIDATES, probes)
+        gost_ports = _prioritize_tcp_ports(GOST_PORT_CANDIDATES, probes)
+        tls_ports = _prioritize_tcp_ports(original_tls_ports, probes)
 
         eid = None
         try:
@@ -381,16 +538,19 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
             )
 
             scan_name = 'DEEP' if DEEP_SCAN else 'FAST'
-            # Stage 3: validated TCP fallback. Do not probe the TCP socket with
-            # /dev/tcp first because a raw probe can consume a tcp-server
-            # session. Start the real OpenVPN client directly and validate L3.
+            # Stage 3: validated TCP fallback. TCP preflight only ranks ports
+            # which returned RST ahead of unknown/timeouts and skips ports with
+            # an existing listener. It never provisions or changes the Exit.
             job_set(job_id, state='running', message=f'مرحله 3 ({scan_name}): GRE/FOU سالم نیست؛ OpenVPN P2P/TCP')
             static_key = _openvpn_static_key()
             openvpn_errors = []
-            for port in OPENVPN_PORT_CANDIDATES:
+            if not openvpn_ports:
+                openvpn_errors.append('Preflight: همه TCP candidateها روی خارج اشغال هستند')
+            for port in openvpn_ports:
                 job_set(job_id, message=f'OpenVPN/TCP: تست TCP {port} روی سرور خارج')
                 remote = {}
                 ping_text = ''
+                candidate_started = time.monotonic()
                 try:
                     healthy, ping_text, remote = await _build_openvpn(
                         agent_id, eid, iface, iran_ip, endpoint,
@@ -398,18 +558,34 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
                         port, static_key,
                     )
                     if healthy:
+                        _record_timing(
+                            job_id, timings, 'openvpn_candidate', candidate_started,
+                            port=port, outcome='online'
+                        )
                         job_set(job_id, message=f'OpenVPN/TCP روی TCP {port} دوطرفه ONLINE شد')
                         _save_success(
                             job_id, core, eid, iface, endpoint, iran_ip, local_ip,
                             remote_addr, agent_id, 'openvpn-tcp', port, remote,
                             port_plan, mtu,
                         )
+                        _finish_timing(job_id, timings, build_started)
                         return
                     openvpn_errors.append(f'TCP {port}: Peer Ping نشد')
+                    outcome = 'health-failed'
                 except Exception as exc:
                     openvpn_errors.append(f'TCP {port}: {exc}')
+                    outcome = 'error'
+                _record_timing(
+                    job_id, timings, 'openvpn_candidate', candidate_started,
+                    port=port, outcome=outcome
+                )
+                cleanup_started = time.monotonic()
                 _cleanup_openvpn_local(eid)
                 await asyncio.sleep(0.2)
+                _record_timing(
+                    job_id, timings, 'candidate_cleanup', cleanup_started,
+                    log=False, transport='openvpn-tcp', port=port
+                )
 
             # Stage 4: retain GOST as an additional optional core.
             job_set(job_id, message='مرحله 4: OpenVPN/TCP سالم نشد؛ تست GOST/WSS')
@@ -417,10 +593,13 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
             password = secrets.token_urlsafe(24)
             ws_path = '/api/v1/stream/' + secrets.token_hex(12)
             gost_errors = []
-            for port in GOST_PORT_CANDIDATES:
+            if not gost_ports:
+                gost_errors.append('Preflight: همه TCP candidateها روی خارج اشغال هستند')
+            for port in gost_ports:
                 job_set(job_id, message=f'GOST/WSS: تست TCP {port} روی سرور خارج')
                 remote = {}
                 ping_text = ''
+                candidate_started = time.monotonic()
                 try:
                     healthy, ping_text, remote = await _build_gost(
                         agent_id, eid, iface, iran_ip, endpoint,
@@ -428,44 +607,79 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
                         port, username, password, ws_path,
                     )
                     if healthy:
+                        _record_timing(
+                            job_id, timings, 'gost_candidate', candidate_started,
+                            port=port, outcome='online'
+                        )
                         job_set(job_id, message=f'GOST/WSS روی TCP {port} دوطرفه ONLINE شد')
                         _save_success(
                             job_id, core, eid, iface, endpoint, iran_ip, local_ip,
                             remote_addr, agent_id, 'gost-wss', port, remote,
                             port_plan, mtu,
                         )
+                        _finish_timing(job_id, timings, build_started)
                         return
                     gost_errors.append(f'TCP {port}: Peer Ping نشد')
+                    outcome = 'health-failed'
                 except Exception as exc:
                     gost_errors.append(f'TCP {port}: {exc}')
+                    outcome = 'error'
+                _record_timing(
+                    job_id, timings, 'gost_candidate', candidate_started,
+                    port=port, outcome=outcome
+                )
+                cleanup_started = time.monotonic()
                 _cleanup_gost_local(eid)
                 await asyncio.sleep(0.2)
+                _record_timing(
+                    job_id, timings, 'candidate_cleanup', cleanup_started,
+                    log=False, transport='gost-wss', port=port
+                )
 
             # Stage 5: final experimental framed TLS core.
             tls_errors = []
             job_set(job_id, message='مرحله 5: GOST Core سالم نشد؛ تست آخر Framed TLS/TCP')
-            for port in original_tls_ports:
+            if not tls_ports:
+                tls_errors.append('Preflight: همه TCP candidateها روی خارج اشغال هستند')
+            for port in tls_ports:
                 job_set(job_id, message=f'Framed TLS: تست TCP {port}')
                 remote = {}
                 ping_text = ''
+                candidate_started = time.monotonic()
                 try:
                     healthy, ping_text, remote = await legacy._build_tls(
                         agent_id, eid, iface, iran_ip, endpoint,
                         local_ip, remote_ip, local_addr, remote_addr, port,
                     )
                     if healthy:
+                        _record_timing(
+                            job_id, timings, 'tls_candidate', candidate_started,
+                            port=port, outcome='online'
+                        )
                         job_set(job_id, message=f'Framed TLS روی TCP {port} دوطرفه ONLINE شد')
                         _save_success(
                             job_id, core, eid, iface, endpoint, iran_ip, local_ip,
                             remote_addr, agent_id, 'framed-tls', port, remote,
                             port_plan, mtu,
                         )
+                        _finish_timing(job_id, timings, build_started)
                         return
                     tls_errors.append(f'TCP {port}: Peer Ping نشد')
+                    outcome = 'health-failed'
                 except Exception as exc:
                     tls_errors.append(f'TCP {port}: {exc}')
+                    outcome = 'error'
+                _record_timing(
+                    job_id, timings, 'tls_candidate', candidate_started,
+                    port=port, outcome=outcome
+                )
+                cleanup_started = time.monotonic()
                 legacy._cleanup_local(eid)
                 await asyncio.sleep(0.2)
+                _record_timing(
+                    job_id, timings, 'candidate_cleanup', cleanup_started,
+                    log=False, transport='framed-tls', port=port
+                )
 
             raise RuntimeError(
                 'هیچ Core دوطرفه ONLINE نشد. '
@@ -486,3 +700,4 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
                 except Exception:
                     pass
             job_set(job_id, state='failed', message='خطا: ' + str(exc))
+            _finish_timing(job_id, timings, build_started)
