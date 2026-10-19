@@ -50,20 +50,6 @@ current_version() {
   if [[ "$v" =~ ^[0-9a-f]{40}$ ]]; then printf '%s\n' "$v"; else printf 'unknown\n'; fi
 }
 
-panel_ip() {
-  local ip=""
-  [[ -f /etc/tp27/panel-ip ]] && ip="$(tr -d '[:space:]' < /etc/tp27/panel-ip)"
-  if [[ -z "$ip" && -f /etc/tp27/config.json ]]; then
-    ip="$(python3 - <<'PY' 2>/dev/null || true
-import json
-try: print(json.load(open('/etc/tp27/config.json')).get('public_ip',''))
-except Exception: print('')
-PY
-)"
-  fi
-  printf '%s\n' "$ip"
-}
-
 verify_panel() {
   systemctl is-active --quiet tp27-panel.service || return 1
   for _ in $(seq 1 20); do
@@ -88,6 +74,7 @@ restore_backup() {
   systemctl restart tp27-panel.service || true
   systemctl restart tp27-ports-reconcile.service 2>/dev/null || true
   systemctl restart tp27-plain-control.service 2>/dev/null || true
+  systemctl restart tp27-benchmark.service 2>/dev/null || true
   verify_panel
 }
 
@@ -130,9 +117,6 @@ CURRENT="$(current_version)"
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 BACKUP_NAME="${STAMP}-${CURRENT:0:12}"
 BACKUP="$BACKUP_ROOT/$BACKUP_NAME"
-IP="$(panel_ip)"
-
-[[ -n "$IP" ]] || { write_state failed 'IP پنل قابل تشخیص نیست' "$JOB_ID" "$TARGET" '' false; exit 3; }
 
 mkdir -p "$BACKUP"
 chmod 700 "$BACKUP"
@@ -141,7 +125,7 @@ chmod 600 "$BACKUP/version.before"
 
 write_state backup 'در حال تهیه Backup تراکنشی' "$JOB_ID" "$TARGET" "$BACKUP_NAME" false
 
-# Backup only files the panel installer may replace. Runtime state such as
+# Backup only files the managed installer may replace. Runtime state such as
 # config.json, port mappings and Agent secrets is intentionally not restored.
 set +e
 tar -C / -czf "$BACKUP/system.tar.gz" \
@@ -150,6 +134,7 @@ tar -C / -czf "$BACKUP/system.tar.gz" \
   etc/systemd/system/tp27-panel.service \
   etc/systemd/system/tp27-ports-reconcile.service \
   etc/systemd/system/tp27-plain-control.service \
+  etc/systemd/system/tp27-benchmark.service \
   usr/local/lib/tp27
 TAR_RC=$?
 set -e
@@ -166,7 +151,7 @@ trap 'rm -f "$INSTALLER"' EXIT
 write_state downloading 'در حال دریافت نسخه جدید از GitHub' "$JOB_ID" "$TARGET" "$BACKUP_NAME" false
 set +e
 curl -fsSL --connect-timeout 10 --max-time 90 \
-  "$REPO_RAW/$TARGET/install-panel.sh" -o "$INSTALLER"
+  "$REPO_RAW/$TARGET/install-panel-managed.sh" -o "$INSTALLER"
 CURL_RC=$?
 set -e
 if [[ "$CURL_RC" -ne 0 ]]; then
@@ -179,7 +164,7 @@ write_state installing 'در حال نصب نسخه جدید؛ Tunnelهای فع
 set +e
 TP27_REPO_RAW="$REPO_RAW/$TARGET" \
 TP27_INSTALL_COMMIT="$TARGET" \
-bash "$INSTALLER" "$IP"
+bash "$INSTALLER"
 RC=$?
 set -e
 
