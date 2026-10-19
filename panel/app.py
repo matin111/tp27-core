@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from agent_control import get_agent, queue_command, router as agent_router, wait_command
 from auth import make_session, session_ok, verify_password
 from provision import (
-    CERTS, CORE_CONFIG, EXITS, JOBS, atomic_json, load_json,
+    CERTS, CORE_CONFIG, EXITS, JOBS, atomic_json, job_set, load_json,
     preflight, provision, run, validate_id,
 )
 from provision_gre import provision_gre_via_agent
@@ -28,6 +28,43 @@ BASE = Path(__file__).resolve().parent
 app = FastAPI(title='TP27 Control Panel', docs_url=None, redoc_url=None)
 app.mount('/static', StaticFiles(directory=BASE / 'static'), name='static')
 app.include_router(agent_router)
+
+BUILD_TASKS = {}
+
+
+def _track_build_task(job_id: str, task: asyncio.Task):
+    BUILD_TASKS[job_id] = task
+
+    def _forget(_task):
+        BUILD_TASKS.pop(job_id, None)
+
+    task.add_done_callback(_forget)
+    return task
+
+
+async def _cancel_builds_for_exit(exit_id: str):
+    cancelled = []
+    terminal = {'done', 'failed'}
+    for job_id, job in list(JOBS.items()):
+        if job.get('exit_id') != exit_id or job.get('state') in terminal:
+            continue
+
+        task = BUILD_TASKS.get(job_id)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        if job.get('state') not in terminal:
+            job_set(
+                job_id,
+                state='failed',
+                message=f'ساخت {exit_id} به دلیل حذف تونل لغو شد',
+            )
+        cancelled.append(job_id)
+    return cancelled
 
 
 def authed(request: Request):
@@ -361,14 +398,22 @@ async def update_exit_mappings(request: Request, exit_id: str, body: TunnelMappi
 async def delete_exit(request: Request, exit_id: str):
     guard(request)
     validate_id(exit_id)
+
+    cancelled_jobs = await _cancel_builds_for_exit(exit_id)
     item = find_exit(exit_id)
-    if not item:
+    if not item and not cancelled_jobs:
         raise HTTPException(status_code=404, detail='تونل پیدا نشد')
 
     remote_cleanup = 'not-required'
     warnings = []
-    agent_id = item.get('agent_id')
-    rows = exit_channels(item)
+    if item:
+        agent_id = item.get('agent_id')
+        rows = exit_channels(item)
+    else:
+        job = next((JOBS[jid] for jid in cancelled_jobs if jid in JOBS), {})
+        agent_id = job.get('agent_id')
+        rows = [{'id': exit_id}]
+
     if agent_id:
         agent = get_agent(agent_id)
         if agent and agent.get('online'):
@@ -404,6 +449,7 @@ async def delete_exit(request: Request, exit_id: str):
     return {
         'ok': True,
         'id': exit_id,
+        'cancelled_jobs': cancelled_jobs,
         'remote_cleanup': remote_cleanup,
         'warning': ' '.join(warnings) if warnings else None,
     }
@@ -458,15 +504,21 @@ async def add_exit(request: Request, body: ExitCreate):
         raise HTTPException(status_code=400, detail=probe.get('error') or 'اتصال ناموفق است')
 
     job_id = secrets.token_hex(8)
-    JOBS[job_id] = {'id': job_id, 'state': 'queued', 'messages': []}
+    JOBS[job_id] = {
+        'id': job_id,
+        'state': 'queued',
+        'messages': [],
+        'exit_id': body.id,
+        'agent_id': body.agent_id,
+    }
 
     if body.agent_id:
-        asyncio.create_task(provision_gre_via_agent(
+        task = asyncio.create_task(provision_gre_via_agent(
             job_id, body.agent_id, body.id,
             body.mtu, mapping_plan,
         ))
     elif body.password and not body.private_key:
-        asyncio.create_task(provision_password(
+        task = asyncio.create_task(provision_password(
             job_id, body.host, body.port, body.username,
             body.password, body.id, body.tunnel_port,
             body.mtu, mapping_plan,
@@ -474,11 +526,12 @@ async def add_exit(request: Request, body: ExitCreate):
     else:
         if not body.private_key:
             raise HTTPException(status_code=400, detail='Private Key لازم است')
-        asyncio.create_task(provision(
+        task = asyncio.create_task(provision(
             job_id, body.host, body.port, body.username,
             body.password, body.private_key, body.id,
             body.tunnel_port, body.mtu, mapping_plan,
         ))
+    _track_build_task(job_id, task)
     return {'job_id': job_id}
 
 
