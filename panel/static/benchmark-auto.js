@@ -30,18 +30,25 @@ async function waitCmd(id,timeoutMs=70000){
   throw new Error('مهلت فرمان Agent تمام شد');
 }
 
-async function waitAgentOnline(agentId,timeoutMs=70000){
+async function getAgent(agentId){
+  const data=await req('/api/agents');
+  return (data.agents||[]).find(x=>x.agent_id===agentId)||null;
+}
+
+async function waitAgentFresh(agentId,previousLastSeen,timeoutMs=70000){
   const end=Date.now()+timeoutMs;
   while(Date.now()<end){
-    const data=await req('/api/agents');
-    const a=(data.agents||[]).find(x=>x.agent_id===agentId);
-    if(a&&a.online)return a;
+    const a=await getAgent(agentId);
+    if(a&&a.online&&Number(a.last_seen||0)>Number(previousLastSeen||0))return a;
     await pause(1500);
   }
-  throw new Error('Agent بعد از ارتقا آنلاین نشد');
+  throw new Error('Agent بعد از ارتقا Heartbeat جدید ارسال نکرد');
 }
 
 async function upgradeAgent(agentId){
+  const before=await getAgent(agentId);
+  if(!before||!before.online)throw new Error('Agent قبل از ارتقا آفلاین است');
+  const previousLastSeen=Number(before.last_seen||0);
   const created=await req('/api/agents/'+encodeURIComponent(agentId)+'/commands',{
     method:'POST',
     body:JSON.stringify({action:'upgrade_agent',args:{}}),
@@ -49,7 +56,7 @@ async function upgradeAgent(agentId){
   await waitCmd(created.command_id,90000);
   // upgrade_agent schedules its own restart a few seconds later.
   await pause(8000);
-  return waitAgentOnline(agentId,70000);
+  return waitAgentFresh(agentId,previousLastSeen,70000);
 }
 
 function stripCidr(v){return String(v||'').split('/')[0].trim()}
@@ -66,7 +73,7 @@ async function benchmarkTunnel(x){
     }),
   });
   const r=await waitCmd(created.command_id,65000);
-  if(!r.benchmark_v1)throw new Error('Benchmark addon روی Agent فعال نشد');
+  if(!r.benchmark_v1)throw new Error('Benchmark روی Agent فعال نشد');
   let saved={};
   try{saved=JSON.parse(localStorage.getItem(AUTO_RESULTS_KEY)||'{}')||{}}catch(_){saved={}}
   saved[x.id]={...r,saved_at:Date.now()};
@@ -112,7 +119,6 @@ async function bootstrapAndTestFleet(){
       await upgradeAgent(aid);
     }
 
-    // Let all heartbeats settle after the last scheduled restart.
     await pause(3000);
     const freshStatus=await req('/api/status');
     const freshAgents=await req('/api/agents');
