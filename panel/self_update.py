@@ -5,6 +5,7 @@ import re
 import secrets
 import subprocess
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -21,9 +22,15 @@ BACKUP_ROOT = Path('/var/backups/tp27-panel')
 UPDATER = Path('/usr/local/lib/tp27/tp27-panel-self-update')
 REPO = 'matin111/tp27-core'
 SHA_RE = re.compile(r'^[0-9a-f]{40}$')
+CHANNEL_RE = re.compile(r'^[A-Za-z0-9._/-]{1,80}$')
 TERMINAL = {'done', 'failed', 'rolled_back'}
-LATEST_CACHE = {'sha': None, 'at': 0.0}
+LATEST_CACHE = {'sha': None, 'channel': None, 'at': 0.0}
 LATEST_TTL = 60
+
+
+def _update_channel():
+    value = str(os.environ.get('TP27_UPDATE_CHANNEL') or 'stable').strip()
+    return value if CHANNEL_RE.fullmatch(value) else 'stable'
 
 
 def _guard(request: Request):
@@ -56,27 +63,38 @@ def _current_version():
 
 def _latest_sha(timeout=8, force=False):
     now = time.monotonic()
+    channel = _update_channel()
     cached = str(LATEST_CACHE.get('sha') or '')
-    if not force and SHA_RE.fullmatch(cached) and now - float(LATEST_CACHE.get('at') or 0) < LATEST_TTL:
+    cached_channel = str(LATEST_CACHE.get('channel') or '')
+    if (
+        not force
+        and cached_channel == channel
+        and SHA_RE.fullmatch(cached)
+        and now - float(LATEST_CACHE.get('at') or 0) < LATEST_TTL
+    ):
         return cached
+
+    ref = urllib.parse.quote(channel, safe='')
     req = urllib.request.Request(
-        f'https://api.github.com/repos/{REPO}/commits/main',
+        f'https://api.github.com/repos/{REPO}/commits/{ref}',
         headers={
             'Accept': 'application/vnd.github+json',
-            'User-Agent': 'TP27-Control-Panel-Updater/1.0',
+            'User-Agent': 'TP27-Control-Panel-Updater/2.0',
         },
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             data = json.loads(response.read().decode('utf-8'))
     except Exception as exc:
-        if not force and SHA_RE.fullmatch(cached):
+        if not force and cached_channel == channel and SHA_RE.fullmatch(cached):
             return cached
-        raise RuntimeError(f'بررسی GitHub ناموفق بود: {exc}')
+        raise RuntimeError(f'بررسی کانال {channel} در GitHub ناموفق بود: {exc}')
+
     sha = str(data.get('sha') or '').strip().lower()
     if not SHA_RE.fullmatch(sha):
-        raise RuntimeError('SHA معتبر از GitHub دریافت نشد')
+        raise RuntimeError(f'SHA معتبر از کانال {channel} دریافت نشد')
     LATEST_CACHE['sha'] = sha
+    LATEST_CACHE['channel'] = channel
     LATEST_CACHE['at'] = now
     return sha
 
@@ -138,6 +156,7 @@ async def update_status(request: Request):
     state = _state()
     latest = None
     check_error = None
+    channel = _update_channel()
     try:
         latest = _latest_sha()
     except Exception as exc:
@@ -145,6 +164,7 @@ async def update_status(request: Request):
     return {
         'current': current,
         'latest': latest,
+        'channel': channel,
         'update_available': bool(latest and current != latest),
         'check_error': check_error,
         'job': state,
@@ -155,6 +175,7 @@ async def update_status(request: Request):
 @router.post('/api/system/update/check')
 async def update_check(request: Request):
     _guard(request)
+    channel = _update_channel()
     try:
         latest = _latest_sha(force=True)
     except Exception as exc:
@@ -163,6 +184,7 @@ async def update_check(request: Request):
     return {
         'current': current,
         'latest': latest,
+        'channel': channel,
         'update_available': current != latest,
     }
 
@@ -173,21 +195,29 @@ async def update_apply(request: Request):
     state = _state()
     if state.get('state') not in TERMINAL | {'idle', None}:
         raise HTTPException(status_code=409, detail='یک عملیات بروزرسانی در حال اجراست')
+    channel = _update_channel()
     try:
         target = _latest_sha(force=True)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     current = _current_version()
     if current == target:
-        return {'ok': True, 'already_latest': True, 'current': current, 'target': target}
+        return {
+            'ok': True,
+            'already_latest': True,
+            'current': current,
+            'target': target,
+            'channel': channel,
+        }
     job_id = secrets.token_hex(8)
     unit = _unit_name(job_id)
     record = {
         'job_id': job_id,
         'state': 'queued',
-        'message': 'بروزرسانی در صف اجرا قرار گرفت',
+        'message': f'بروزرسانی کانال {channel} در صف اجرا قرار گرفت',
         'current': current,
         'target': target,
+        'channel': channel,
         'started_at': int(time.time()),
         'finished_at': None,
         'rollback': False,
@@ -200,7 +230,7 @@ async def update_apply(request: Request):
         record.update(state='failed', message=str(exc), finished_at=int(time.time()))
         _atomic_json(STATE_FILE, record)
         raise HTTPException(status_code=500, detail=str(exc))
-    return {'ok': True, 'job_id': job_id, 'target': target, 'unit': unit}
+    return {'ok': True, 'job_id': job_id, 'target': target, 'channel': channel, 'unit': unit}
 
 
 @router.post('/api/system/update/rollback')
@@ -221,6 +251,7 @@ async def update_rollback(request: Request):
         'message': 'Rollback در صف اجرا قرار گرفت',
         'current': _current_version(),
         'target': backups[0].get('before') or 'unknown',
+        'channel': _update_channel(),
         'backup': backup_name,
         'started_at': int(time.time()),
         'finished_at': None,
