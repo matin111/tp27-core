@@ -9,6 +9,7 @@ let wizardTimer=null;
 let wizardReadyAgent=null;
 let activeTunnelId=null;
 let managedTunnelId=null;
+let buildSubmitting=false;
 
 async function api(url,opt={}){
   const method=String(opt.method||'GET').toUpperCase();
@@ -172,15 +173,22 @@ async function preflight(){
 }
 
 async function addExit(){
+  if(buildSubmitting)return;
   const j=$('job');
-  j.textContent='در حال بررسی...';
+  buildSubmitting=true;
+  localStorage.removeItem(ACTIVE_JOB_KEY);
+  j.textContent='در حال ثبت Job ساخت...';
   try{
-    await runPreflight(false);
-    j.textContent='در حال ساخت تونل...';
-    const r=await api('/api/exits',{method:'POST',body:JSON.stringify(payload())});
+    const body=payload();
+    const r=await api('/api/exits',{method:'POST',body:JSON.stringify(body)});
     localStorage.setItem(ACTIVE_JOB_KEY,r.job_id);
+    j.textContent='Job ثبت شد؛ ساخت تونل شروع شد...';
     pollJob(r.job_id,0);
-  }catch(e){j.textContent='خطا: '+e.message}
+  }catch(e){
+    j.textContent='خطا: '+e.message;
+  }finally{
+    buildSubmitting=false;
+  }
 }
 
 async function pollJob(id,failures=0){

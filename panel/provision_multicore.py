@@ -20,11 +20,11 @@ MIN_AGENT_VERSION = legacy.MIN_AGENT_VERSION
 DEFAULT_MTU = legacy.DEFAULT_MTU
 GOST_MTU = 1300
 OPENVPN_MTU = 1300
-# Prefer ports commonly reachable through filtered networks, then the high TCP
-# ports that were useful during TP27 transport validation. Occupied ports are
-# never killed or replaced; the Exit Agent simply skips them.
-OPENVPN_PORT_CANDIDATES = (443, 80, 2053, 2083, 8443, 10443, 8080, 28443, 29443)
-GOST_PORT_CANDIDATES = (443, 80, 8443, 2053, 2083, 10443, 8080)
+DEEP_SCAN = legacy.DEEP_SCAN
+# Fast mode intentionally tests only the ports with the highest real-world hit
+# rate.  Set TP27_DEEP_SCAN=1 for the exhaustive legacy candidate set.
+OPENVPN_PORT_CANDIDATES = (443, 2083, 80) + ((8443, 2053, 10443, 8080, 28443, 29443) if DEEP_SCAN else ())
+GOST_PORT_CANDIDATES = (443, 8443, 2083) + ((80, 2053, 10443, 8080) if DEEP_SCAN else ())
 GOST_BIN = Path('/usr/local/bin/tp27-gost')
 GOST_INSTALLER = Path('/usr/local/lib/tp27/tp27-gost-install.sh')
 GOST_CORE = Path('/usr/local/lib/tp27/tp27-gost-core.py')
@@ -145,7 +145,7 @@ async def _build_openvpn(agent_id, eid, iface, iran_ip, endpoint,
         listen_port, static_key, agent_id,
     )
     _start_local_openvpn(eid)
-    await asyncio.sleep(4)
+    await asyncio.sleep(1)
     healthy, ping_text = await legacy._health_peer(iface, remote_addr, tries=8)
     return healthy, ping_text, remote
 
@@ -258,7 +258,7 @@ async def _build_gost(agent_id, eid, iface, iran_ip, endpoint,
         remote['server_cert_pem'], agent_id,
     )
     _start_local_gost(eid)
-    await asyncio.sleep(5)
+    await asyncio.sleep(1.25)
     healthy, ping_text = await legacy._health_peer(iface, remote_addr, tries=7)
     return healthy, ping_text, remote
 
@@ -380,10 +380,11 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
                 agent_id, requested_id, mtu, mappings
             )
 
+            scan_name = 'DEEP' if DEEP_SCAN else 'FAST'
             # Stage 3: validated TCP fallback. Do not probe the TCP socket with
             # /dev/tcp first because a raw probe can consume a tcp-server
             # session. Start the real OpenVPN client directly and validate L3.
-            job_set(job_id, state='running', message='مرحله 3: GRE/FOU سالم نیست؛ سوییچ به OpenVPN P2P/TCP')
+            job_set(job_id, state='running', message=f'مرحله 3 ({scan_name}): GRE/FOU سالم نیست؛ OpenVPN P2P/TCP')
             static_key = _openvpn_static_key()
             openvpn_errors = []
             for port in OPENVPN_PORT_CANDIDATES:
@@ -408,8 +409,7 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
                 except Exception as exc:
                     openvpn_errors.append(f'TCP {port}: {exc}')
                 _cleanup_openvpn_local(eid)
-                await legacy._cleanup_remote(agent_id, eid)
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.2)
 
             # Stage 4: retain GOST as an additional optional core.
             job_set(job_id, message='مرحله 4: OpenVPN/TCP سالم نشد؛ تست GOST/WSS')
@@ -439,8 +439,7 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
                 except Exception as exc:
                     gost_errors.append(f'TCP {port}: {exc}')
                 _cleanup_gost_local(eid)
-                await legacy._cleanup_remote(agent_id, eid)
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.2)
 
             # Stage 5: final experimental framed TLS core.
             tls_errors = []
@@ -466,8 +465,7 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
                 except Exception as exc:
                     tls_errors.append(f'TCP {port}: {exc}')
                 legacy._cleanup_local(eid)
-                await legacy._cleanup_remote(agent_id, eid)
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.2)
 
             raise RuntimeError(
                 'هیچ Core دوطرفه ONLINE نشد. '
