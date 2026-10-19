@@ -1,6 +1,10 @@
 (()=>{
 'use strict';
 
+const style=document.createElement('style');
+style.textContent='.premium-rebuild-btn,#upgradeFastBtn{visibility:hidden!important;pointer-events:none!important}.premium-rebuild-btn.tp27-safe-ready,#upgradeFastBtn.tp27-safe-ready{visibility:visible!important;pointer-events:auto!important}';
+document.head.appendChild(style);
+
 function rowFor(id){
   try{return (currentStatus.exits||[]).find(x=>x.id===id)||null}catch(_){return null}
 }
@@ -36,6 +40,7 @@ function bind(){
     button.textContent='تعویض امن';
     button.title='ابتدا مسیر جایگزین ساخته و Health Check می‌شود؛ سپس Cutover انجام می‌شود.';
     button.onclick=()=>run(id,button);
+    button.classList.add('tp27-safe-ready');
   });
   const button=document.getElementById('upgradeFastBtn');
   if(button&&button.dataset.safeBusy!=='1'){
@@ -45,9 +50,12 @@ function bind(){
     button.textContent='تعویض امن Transport';
     button.title='بدون حذف اولیه Tunnel فعلی';
     button.onclick=()=>run(id,button);
+    button.classList.add('tp27-safe-ready');
   }
 }
 
 bind();
-setInterval(bind,700);
+const observer=new MutationObserver(bind);
+observer.observe(document.body,{childList:true,subtree:true});
+setInterval(bind,1500);
 })();
