@@ -18,6 +18,7 @@ PLAIN_VERSION = '1.3.0'
 BASE_AGENT = Path('/opt/tp27-exit-agent/tp27-exit-agent.py')
 GOST_ADDON = Path('/opt/tp27-exit-agent/tp27_gost_addon.py')
 OPENVPN_ADDON = Path('/opt/tp27-exit-agent/tp27_openvpn_addon.py')
+BENCHMARK_ADDON = Path('/opt/tp27-exit-agent/tp27_benchmark_addon.py')
 CONFIG = Path('/etc/tp27/exit-agent.json')
 SAFE_ACTIONS = {
     'status',
@@ -51,6 +52,9 @@ if GOST_ADDON.exists():
 if OPENVPN_ADDON.exists():
     OPENVPN = load_module(OPENVPN_ADDON, 'tp27_openvpn_addon_plain')
     OPENVPN.install(BASE)
+if BENCHMARK_ADDON.exists():
+    BENCHMARK = load_module(BENCHMARK_ADDON, 'tp27_benchmark_addon_plain')
+    BENCHMARK.install(BASE)
 BASE_VERSION = getattr(BASE, 'VERSION', 'unknown')
 
 
