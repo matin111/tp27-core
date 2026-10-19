@@ -10,7 +10,9 @@ from agent_control import get_agent, queue_command, wait_command
 from portplan import apply_plan, validate_plan
 from provision import CORE_CONFIG, EXITS, atomic_json, iface_for, job_set, load_json, run, validate_id
 
-MIN_AGENT_VERSION = (1, 5, 0)
+MIN_AGENT_VERSION = (1, 6, 0)
+AGENT_UPGRADE_TARGET = '1.6.0'
+AGENT_RECONNECT_POLL = 1.0
 GRE_POOL = ipaddress.ip_network('10.253.0.0/16')
 DEFAULT_MTU = 1400
 TLS_MTU = 1300
@@ -25,6 +27,9 @@ HEALTH_HARD_FAIL_STREAK = 2
 HEALTH_PING_INTERVAL = 0.25
 HEALTH_WINDOW_DEADLINE = 3
 HEALTH_RETRY_DELAY = 0.35
+GRE_LOCAL_SETTLE = 0.10
+TLS_LOCAL_SETTLE = 0.25
+CANDIDATE_CLEANUP_SETTLE = 0.05
 
 
 def _version_tuple(value):
@@ -112,7 +117,7 @@ async def _ensure_agent(agent_id, job_id):
     if _version_tuple(agent.get('version')) >= MIN_AGENT_VERSION:
         return agent
 
-    job_set(job_id, message=f"ارتقای خودکار Agent از v{agent.get('version','?')} به v1.5.0")
+    job_set(job_id, message=f"ارتقای خودکار Agent از v{agent.get('version','?')} به v{AGENT_UPGRADE_TARGET}")
     try:
         command = queue_command(agent_id, 'upgrade_agent', {})
         result = await wait_command(command['id'], timeout=90)
@@ -126,12 +131,12 @@ async def _ensure_agent(agent_id, job_id):
 
     deadline = time.monotonic() + 70
     while time.monotonic() < deadline:
-        await asyncio.sleep(3)
+        await asyncio.sleep(AGENT_RECONNECT_POLL)
         agent = get_agent(agent_id)
         if agent and agent.get('online') and _version_tuple(agent.get('version')) >= MIN_AGENT_VERSION:
             job_set(job_id, message=f"Agent v{agent.get('version')} آنلاین شد")
             return agent
-    raise RuntimeError('Agent بعد از ارتقا به v1.5.0 برنگشت')
+    raise RuntimeError(f'Agent بعد از ارتقا به v{AGENT_UPGRADE_TARGET} برنگشت')
 
 
 def _write_local_gre(eid, iface, local_ip, remote_addr, iran_ip, endpoint,
@@ -274,7 +279,7 @@ async def _build_gre(agent_id, eid, iface, iran_ip, endpoint,
     _write_local_gre(eid, iface, local_ip, remote_addr, iran_ip, endpoint,
                      gre_key, mtu, agent_id, transport, fou_port)
     _start_local(eid, transport)
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(GRE_LOCAL_SETTLE)
     remote_result = await _provision_remote_gre(
         agent_id, eid, iran_ip, endpoint, remote_ip, local_addr,
         gre_key, mtu, transport, fou_port,
@@ -293,7 +298,7 @@ async def _build_tls(agent_id, eid, iface, iran_ip, endpoint,
         listen_port, remote_result['cert_pin'], agent_id,
     )
     _start_local(eid, 'framed-tls')
-    await asyncio.sleep(1)
+    await asyncio.sleep(TLS_LOCAL_SETTLE)
     healthy, ping_text = await _health_peer(iface, remote_addr, tries=6)
     return healthy, ping_text, remote_result
 
@@ -365,7 +370,7 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
         else:
             raw_diag = _diagnostics(eid, iface, raw_remote, raw_ping)
             _cleanup_local(eid)
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(CANDIDATE_CLEANUP_SETTLE)
 
             fou_errors = []
             job_set(job_id, message='مرحله 2: Raw GRE سالم نیست؛ تست سریع GRE/UDP')
@@ -389,7 +394,7 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
                 except Exception as exc:
                     fou_errors.append(f'UDP {fou_port}: {exc}')
                 _cleanup_local(eid)
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(CANDIDATE_CLEANUP_SETTLE)
 
             if not final_transport:
                 job_set(job_id, message='مرحله 3: GRE/UDP فیلتر است؛ سوییچ خودکار به Framed TLS/TCP خروجی ایران')
@@ -413,7 +418,7 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
                     except Exception as exc:
                         tls_errors.append(f'TCP {tcp_port}: {exc}')
                     _cleanup_local(eid)
-                    await asyncio.sleep(0.2)
+                    await asyncio.sleep(CANDIDATE_CLEANUP_SETTLE)
 
                 if not final_transport:
                     raise RuntimeError(
