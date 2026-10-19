@@ -288,7 +288,7 @@ async def login(password: str = Form(...)):
 
 @app.get('/logout')
 async def logout():
-    response = RedirectResponse('/')
+    response = RedirectResponse('/login')
     response.delete_cookie('tp27_session')
     return response
 
