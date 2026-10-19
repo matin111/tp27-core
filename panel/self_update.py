@@ -70,7 +70,7 @@ def _latest_sha(timeout=8, force=False):
         with urllib.request.urlopen(req, timeout=timeout) as response:
             data = json.loads(response.read().decode('utf-8'))
     except Exception as exc:
-        if SHA_RE.fullmatch(cached):
+        if not force and SHA_RE.fullmatch(cached):
             return cached
         raise RuntimeError(f'بررسی GitHub ناموفق بود: {exc}')
     sha = str(data.get('sha') or '').strip().lower()
