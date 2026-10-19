@@ -10,6 +10,13 @@ def test_safe_switch_ui_uses_dedicated_switch_endpoint():
     assert 'مسیر فعلی تا سالم شدن مسیر جدید حذف نمی‌شود' in text
 
 
+def test_safe_switch_ui_does_not_create_mutation_render_loop():
+    text = (ROOT / 'panel/static/safe-switch-ui.js').read_text(encoding='utf-8')
+    assert 'MutationObserver' not in text
+    assert '.premium-rebuild-btn:not(.tp27-safe-ready)' in text
+    assert 'setInterval(bind,1200)' in text
+
+
 def test_safe_switch_backend_is_blue_green():
     text = (ROOT / 'panel/safe_switch.py').read_text(encoding='utf-8')
     build_at = text.index('candidate = await _build_candidate')
