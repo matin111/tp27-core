@@ -3,18 +3,20 @@ import argparse
 import hashlib
 import hmac
 import importlib.util
+import ipaddress
 import json
 import os
 import re
 import secrets
 import socket
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 import requests
 
-PLAIN_VERSION = '1.3.0'
+PLAIN_VERSION = '1.4.0'
 BASE_AGENT = Path('/opt/tp27-exit-agent/tp27-exit-agent.py')
 GOST_ADDON = Path('/opt/tp27-exit-agent/tp27_gost_addon.py')
 OPENVPN_ADDON = Path('/opt/tp27-exit-agent/tp27_openvpn_addon.py')
@@ -30,6 +32,8 @@ SAFE_ACTIONS = {
     'delete_exit',
     'upgrade_agent',
 }
+BENCHMARK_NET = ipaddress.ip_network('10.253.0.0/16')
+BENCHMARK_PORT = 52701
 
 
 def load_module(path, name):
@@ -52,10 +56,145 @@ if GOST_ADDON.exists():
 if OPENVPN_ADDON.exists():
     OPENVPN = load_module(OPENVPN_ADDON, 'tp27_openvpn_addon_plain')
     OPENVPN.install(BASE)
-if BENCHMARK_ADDON.exists():
-    BENCHMARK = load_module(BENCHMARK_ADDON, 'tp27_benchmark_addon_plain')
-    BENCHMARK.install(BASE)
 BASE_VERSION = getattr(BASE, 'VERSION', 'unknown')
+
+
+def _bench_ip(value, name):
+    try:
+        addr = ipaddress.ip_address(str(value or '').split('/')[0].strip())
+    except Exception:
+        raise ValueError(f'{name} نامعتبر است')
+    if addr.version != 4 or addr not in BENCHMARK_NET:
+        raise ValueError(f'{name} باید داخل شبکه داخلی TP27 باشد')
+    return str(addr)
+
+
+def _bench_iperf():
+    path = BASE.shutil_which('iperf3')
+    if path:
+        return path
+    env = dict(os.environ)
+    env['DEBIAN_FRONTEND'] = 'noninteractive'
+    for cmd in (['apt-get', 'update', '-qq'], ['apt-get', 'install', '-y', '-qq', 'iperf3']):
+        p = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           timeout=180, env=env)
+        if p.returncode != 0:
+            raise RuntimeError('نصب خودکار iperf3 ناموفق بود: ' + (p.stderr or p.stdout or 'apt failed')[-1000:])
+    path = BASE.shutil_which('iperf3')
+    if not path:
+        raise RuntimeError('iperf3 پیدا نشد')
+    return path
+
+
+def _bench_ping(text):
+    loss = None
+    avg = None
+    jitter = None
+    m = re.search(r'(\d+(?:\.\d+)?)%\s+packet loss', text or '')
+    if m:
+        loss = float(m.group(1))
+    m = re.search(r'(?:rtt|round-trip) min/avg/max/(?:mdev|stddev) = ([0-9.]+)/([0-9.]+)/([0-9.]+)/([0-9.]+)', text or '')
+    if m:
+        avg = float(m.group(2))
+        jitter = float(m.group(4))
+    return {'ping_ms': avg, 'jitter_ms': jitter, 'loss_pct': loss}
+
+
+def _bench_iperf_run(iperf, target, source, port, duration, parallel, reverse=False):
+    cmd = [iperf, '-c', target, '-B', source, '-p', str(port), '-t', str(duration),
+           '-O', '1', '-P', str(parallel), '-J', '--connect-timeout', '5000']
+    if reverse:
+        cmd.append('-R')
+    rc, out, err = BASE.run(cmd, timeout=duration + 25, check=False)
+    if rc != 0:
+        raise RuntimeError((err or out or 'iperf3 failed')[-1600:])
+    try:
+        data = json.loads(out)
+    except Exception:
+        raise RuntimeError('خروجی JSON از iperf3 دریافت نشد')
+    if data.get('error'):
+        raise RuntimeError(str(data['error'])[:1400])
+    end = data.get('end') or {}
+    receiver = end.get('sum_received') or {}
+    sender = end.get('sum_sent') or {}
+    bps = receiver.get('bits_per_second')
+    if bps is None:
+        bps = sender.get('bits_per_second')
+    if bps is None:
+        raise RuntimeError('Throughput از iperf3 قابل خواندن نیست')
+    return {
+        'mbps': round(float(bps) / 1_000_000.0, 2),
+        'retransmits': int(sender.get('retransmits') or 0),
+    }
+
+
+def _bench_quality(ping_ms, loss_pct, download_mbps, upload_mbps):
+    ping_ms = 9999.0 if ping_ms is None else float(ping_ms)
+    loss_pct = 100.0 if loss_pct is None else float(loss_pct)
+    floor = min(float(download_mbps or 0), float(upload_mbps or 0))
+    if loss_pct <= 1 and ping_ms <= 90 and floor >= 80:
+        return 'excellent'
+    if loss_pct <= 2 and ping_ms <= 150 and floor >= 30:
+        return 'good'
+    if loss_pct <= 5 and ping_ms <= 220 and floor >= 10:
+        return 'fair'
+    return 'poor'
+
+
+def _embedded_benchmark(args):
+    eid = BASE.safe_id(str(args.get('id', '')))
+    target = _bench_ip(args.get('target_ip'), 'target_ip')
+    source = _bench_ip(args.get('source_ip'), 'source_ip')
+    duration = max(2, min(int(args.get('duration', 4) or 4), 10))
+    parallel = max(1, min(int(args.get('parallel', 1) or 1), 4))
+    port = int(args.get('port', BENCHMARK_PORT) or BENCHMARK_PORT)
+    if not 20000 <= port <= 60999:
+        raise ValueError('benchmark port نامعتبر است')
+    iperf = _bench_iperf()
+    rc, pout, perr = BASE.run(['ping', '-I', source, '-c', '6', '-i', '0.2', '-W', '1', target],
+                              timeout=10, check=False)
+    ping = _bench_ping(pout or perr or '')
+    if rc != 0 and ping.get('loss_pct') in (None, 100.0):
+        raise RuntimeError('Peer Ping قبل از Benchmark شکست خورد')
+    download = _bench_iperf_run(iperf, target, source, port, duration, parallel, reverse=False)
+    upload = _bench_iperf_run(iperf, target, source, port, duration, parallel, reverse=True)
+    result = {
+        'benchmark_v1': True,
+        'id': eid,
+        'target_ip': target,
+        'source_ip': source,
+        'duration': duration,
+        'parallel': parallel,
+        **ping,
+        'download_mbps': download['mbps'],
+        'upload_mbps': upload['mbps'],
+        'download_retransmits': download['retransmits'],
+        'upload_retransmits': upload['retransmits'],
+    }
+    result['quality'] = _bench_quality(result.get('ping_ms'), result.get('loss_pct'),
+                                       result.get('download_mbps'), result.get('upload_mbps'))
+    return result
+
+
+def install_benchmark_action():
+    if BENCHMARK_ADDON.exists():
+        BENCHMARK = load_module(BENCHMARK_ADDON, 'tp27_benchmark_addon_plain')
+        BENCHMARK.install(BASE)
+        return
+    previous = BASE.ACTIONS.get('status')
+    if previous is None:
+        raise RuntimeError('base status action is missing')
+
+    def status_or_benchmark(args):
+        args = args or {}
+        if args.get('benchmark_v1'):
+            return _embedded_benchmark(args)
+        return previous(args)
+
+    BASE.ACTIONS['status'] = status_or_benchmark
+
+
+install_benchmark_action()
 
 
 def canonical(obj):
@@ -154,6 +293,12 @@ def post_result(cfg, command_id, ok, result=None, error=None):
 
 
 def run_forever():
+    raw_cfg = json.loads(CONFIG.read_text(encoding='utf-8'))
+    if raw_cfg.get('transport') != 'plain-hmac-v1':
+        # Universal runner: HTTPS agents use the normal BASE loop while
+        # keeping the same addon/benchmark action table installed above.
+        return BASE.run_forever()
+
     cfg = load_config()
     poll_seconds = int(cfg.get('poll_seconds', 5))
     last_heartbeat = 0
