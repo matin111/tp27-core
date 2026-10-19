@@ -15,6 +15,9 @@ DEFAULT_MTU = 1400
 TLS_MTU = 1300
 FOU_PORT_CANDIDATES = (443, 8443, 2053, 2083, 10443)
 TLS_PORT_CANDIDATES = (443, 80, 8443, 2053, 2083, 10443, 8080)
+HEALTH_PING_COUNT = 5
+HEALTH_MAX_LOSS_PCT = 20.0
+HEALTH_REQUIRED_STREAK = 2
 
 
 def _version_tuple(value):
@@ -200,14 +203,36 @@ async def _provision_remote_tls(agent_id, eid, iran_ip, endpoint, remote_ip,
 
 
 async def _health_peer(iface, remote_addr, tries=6):
-    last = ''
-    for _ in range(tries):
-        rc, out, err = run(['ping', '-I', iface, '-c', '2', '-W', '2', remote_addr], check=False)
-        last = out or err or ''
-        if rc == 0:
-            return True, last
-        await asyncio.sleep(2)
-    return False, last
+    attempts = max(int(tries or 0), HEALTH_REQUIRED_STREAK)
+    streak = 0
+    samples = []
+
+    for attempt in range(1, attempts + 1):
+        rc, out, err = run([
+            'ping', '-I', iface,
+            '-c', str(HEALTH_PING_COUNT),
+            '-W', '1', '-w', '6',
+            remote_addr,
+        ], check=False)
+        text = out or err or ''
+        match = re.search(r'(\d+(?:\.\d+)?)%\s+packet loss', text)
+        loss = float(match.group(1)) if match else None
+        loss_text = f'{loss:.1f}' if loss is not None else 'unknown'
+        samples.append(
+            f'HEALTH_WINDOW={attempt} rc={rc} loss={loss_text}%\n{text}'.strip()
+        )
+
+        if rc == 0 and loss is not None and loss <= HEALTH_MAX_LOSS_PCT:
+            streak += 1
+            if streak >= HEALTH_REQUIRED_STREAK:
+                return True, '\n\n'.join(samples[-HEALTH_REQUIRED_STREAK:])
+        else:
+            streak = 0
+
+        if attempt < attempts:
+            await asyncio.sleep(1)
+
+    return False, '\n\n'.join(samples[-3:])
 
 
 def _diagnostics(eid, iface, remote_result, ping_text):
