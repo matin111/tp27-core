@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/bin/sh -c 'if [ -f /opt/tp27-exit-agent/tp27-exit-agent-multicore.py ]; then exec /opt/tp27-exit-agent/venv/bin/python /opt/tp27-exit-agent/tp27-exit-agent-multicore.py --run; else exec /opt/tp27-exit-agent/venv/bin/python /opt/tp27-exit-agent/tp27-exit-agent.py --run; fi'
+ExecStart=/opt/tp27-exit-agent/venv/bin/python /opt/tp27-exit-agent/tp27-exit-agent-plain.py --run
 Restart=always
 RestartSec=5
 User=root
@@ -16,7 +16,7 @@ ProtectHome=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-ReadWritePaths=/etc/tp27 /var/log/tp27 /run /dev/net/tun
+ReadWritePaths=/etc/tp27 /var/log/tp27 /run /dev/net/tun /opt/tp27-exit-agent
 
 [Install]
 WantedBy=multi-user.target

@@ -1,0 +1,25 @@
+[Unit]
+Description=TP27 Tunnel Benchmark Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStartPre=/bin/sh -c '/usr/sbin/iptables -C INPUT -p tcp --dport 52701 -j DROP 2>/dev/null || /usr/sbin/iptables -I INPUT 1 -p tcp --dport 52701 -j DROP'
+ExecStartPre=/bin/sh -c '/usr/sbin/iptables -C INPUT -p tcp -s 10.253.0.0/16 --dport 52701 -j ACCEPT 2>/dev/null || /usr/sbin/iptables -I INPUT 1 -p tcp -s 10.253.0.0/16 --dport 52701 -j ACCEPT'
+ExecStart=/usr/bin/iperf3 -s -p 52701
+ExecStopPost=/bin/sh -c '/usr/sbin/iptables -D INPUT -p tcp -s 10.253.0.0/16 --dport 52701 -j ACCEPT 2>/dev/null || true'
+ExecStopPost=/bin/sh -c '/usr/sbin/iptables -D INPUT -p tcp --dport 52701 -j DROP 2>/dev/null || true'
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target
