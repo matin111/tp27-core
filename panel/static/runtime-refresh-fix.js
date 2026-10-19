@@ -4,6 +4,7 @@
 const FIRST_PAINT_MAX_MS=8000;
 const root=document.documentElement;
 root.classList.add('tp27-first-paint-lock');
+root.classList.remove('tp27-first-paint-ready');
 
 const firstPaintStyle=document.createElement('style');
 firstPaintStyle.id='tp27FirstPaintLockStyle';
@@ -28,7 +29,7 @@ function firstPaintReady(){
 }
 
 function releaseFirstPaint(reason){
-  if(!root.classList.contains('tp27-first-paint-lock'))return;
+  root.classList.add('tp27-first-paint-ready');
   root.classList.remove('tp27-first-paint-lock');
   document.body?.setAttribute('data-tp27-first-paint',String(reason||'ready'));
 }

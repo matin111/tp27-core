@@ -76,7 +76,7 @@ done
 fetch panel/provision_resilient.py "$PANEL/provision_resilient.py"
 fetch panel/provision_multicore.py "$PANEL/provision_gre.py"
 
-for f in index.html login.html style.css app.js fast-ui.js agent-manage.js premium.css premium-ui.js runtime-refresh-fix.js benchmark-ui.js benchmark-auto.js server-speed-ui.js speed-recovery-fix.js safe-switch-ui.js self-update.js ui-stability.js; do
+for f in index.html login.html style.css first-paint.css app.js fast-ui.js agent-manage.js premium.css premium-ui.js runtime-refresh-fix.js benchmark-ui.js benchmark-auto.js server-speed-ui.js speed-recovery-fix.js safe-switch-ui.js self-update.js ui-stability.js; do
   fetch "panel/static/$f" "$STATIC/$f"
 done
 
@@ -84,9 +84,13 @@ python3 - "$STATIC/index.html" <<'PY'
 from pathlib import Path
 p=Path('/opt/tp27-panel/static/index.html')
 s=p.read_text(encoding='utf-8')
+boot='<link rel="stylesheet" href="/static/first-paint.css">'
+style='<link rel="stylesheet" href="/static/style.css">'
 safe='<script src="/static/safe-switch-ui.js"></script>'
 self_update='<script src="/static/self-update.js"></script>'
 stability='<script src="/static/ui-stability.js"></script>'
+if boot not in s:
+    s=s.replace(style, style+'\n  '+boot) if style in s else s.replace('</head>', '  '+boot+'\n</head>')
 if safe not in s:
     s=s.replace(self_update, safe+'\n'+self_update) if self_update in s else s.replace('</body>', safe+'\n</body>')
 if stability not in s:
