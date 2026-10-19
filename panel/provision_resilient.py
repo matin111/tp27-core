@@ -2,6 +2,7 @@
 import asyncio
 import hashlib
 import ipaddress
+import os
 import re
 import time
 
@@ -13,11 +14,17 @@ MIN_AGENT_VERSION = (1, 5, 0)
 GRE_POOL = ipaddress.ip_network('10.253.0.0/16')
 DEFAULT_MTU = 1400
 TLS_MTU = 1300
-FOU_PORT_CANDIDATES = (443, 8443, 2053, 2083, 10443)
-TLS_PORT_CANDIDATES = (443, 80, 8443, 2053, 2083, 10443, 8080)
+DEEP_SCAN = os.environ.get('TP27_DEEP_SCAN', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+FOU_PORT_CANDIDATES = (443, 2083, 8443) + ((2053, 10443) if DEEP_SCAN else ())
+TLS_PORT_CANDIDATES = (443, 80, 8443) + ((2053, 2083, 10443, 8080) if DEEP_SCAN else ())
 HEALTH_PING_COUNT = 5
 HEALTH_MAX_LOSS_PCT = 20.0
 HEALTH_REQUIRED_STREAK = 2
+HEALTH_REJECT_STREAK = 3
+HEALTH_HARD_FAIL_STREAK = 2
+HEALTH_PING_INTERVAL = 0.25
+HEALTH_WINDOW_DEADLINE = 3
+HEALTH_RETRY_DELAY = 0.35
 
 
 def _version_tuple(value):
@@ -204,14 +211,17 @@ async def _provision_remote_tls(agent_id, eid, iran_ip, endpoint, remote_ip,
 
 async def _health_peer(iface, remote_addr, tries=6):
     attempts = max(int(tries or 0), HEALTH_REQUIRED_STREAK)
-    streak = 0
+    good_streak = 0
+    bad_streak = 0
+    hard_fail_streak = 0
     samples = []
 
     for attempt in range(1, attempts + 1):
         rc, out, err = run([
             'ping', '-I', iface,
             '-c', str(HEALTH_PING_COUNT),
-            '-W', '1', '-w', '6',
+            '-i', str(HEALTH_PING_INTERVAL),
+            '-W', '1', '-w', str(HEALTH_WINDOW_DEADLINE),
             remote_addr,
         ], check=False)
         text = out or err or ''
@@ -222,15 +232,22 @@ async def _health_peer(iface, remote_addr, tries=6):
             f'HEALTH_WINDOW={attempt} rc={rc} loss={loss_text}%\n{text}'.strip()
         )
 
-        if rc == 0 and loss is not None and loss <= HEALTH_MAX_LOSS_PCT:
-            streak += 1
-            if streak >= HEALTH_REQUIRED_STREAK:
+        acceptable = rc == 0 and loss is not None and loss <= HEALTH_MAX_LOSS_PCT
+        if acceptable:
+            good_streak += 1
+            bad_streak = 0
+            hard_fail_streak = 0
+            if good_streak >= HEALTH_REQUIRED_STREAK:
                 return True, '\n\n'.join(samples[-HEALTH_REQUIRED_STREAK:])
         else:
-            streak = 0
+            good_streak = 0
+            bad_streak += 1
+            hard_fail_streak = hard_fail_streak + 1 if loss == 100.0 else 0
+            if hard_fail_streak >= HEALTH_HARD_FAIL_STREAK or bad_streak >= HEALTH_REJECT_STREAK:
+                return False, '\n\n'.join(samples[-3:])
 
         if attempt < attempts:
-            await asyncio.sleep(1)
+            await asyncio.sleep(HEALTH_RETRY_DELAY)
 
     return False, '\n\n'.join(samples[-3:])
 
@@ -257,7 +274,7 @@ async def _build_gre(agent_id, eid, iface, iran_ip, endpoint,
     _write_local_gre(eid, iface, local_ip, remote_addr, iran_ip, endpoint,
                      gre_key, mtu, agent_id, transport, fou_port)
     _start_local(eid, transport)
-    await asyncio.sleep(2)
+    await asyncio.sleep(0.5)
     remote_result = await _provision_remote_gre(
         agent_id, eid, iran_ip, endpoint, remote_ip, local_addr,
         gre_key, mtu, transport, fou_port,
@@ -276,7 +293,7 @@ async def _build_tls(agent_id, eid, iface, iran_ip, endpoint,
         listen_port, remote_result['cert_pin'], agent_id,
     )
     _start_local(eid, 'framed-tls')
-    await asyncio.sleep(4)
+    await asyncio.sleep(1)
     healthy, ping_text = await _health_peer(iface, remote_addr, tries=6)
     return healthy, ping_text, remote_result
 
@@ -323,7 +340,8 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
         gre_key = _gre_key(eid, iran_ip, endpoint)
         iface = iface_for(eid)
 
-        job_set(job_id, state='running', message='AUTO TRANSPORT: Raw GRE → GRE/UDP → Framed TLS/TCP')
+        profile = 'DEEP' if DEEP_SCAN else 'FAST'
+        job_set(job_id, state='running', message=f'AUTO TRANSPORT {profile}: Raw GRE → GRE/UDP → Framed TLS/TCP')
         _cleanup_local(eid)
         await _cleanup_remote(agent_id, eid)
 
@@ -347,11 +365,10 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
         else:
             raw_diag = _diagnostics(eid, iface, raw_remote, raw_ping)
             _cleanup_local(eid)
-            await _cleanup_remote(agent_id, eid)
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.2)
 
             fou_errors = []
-            job_set(job_id, message='مرحله 2: Raw GRE سالم نیست؛ تست GRE/UDP')
+            job_set(job_id, message='مرحله 2: Raw GRE سالم نیست؛ تست سریع GRE/UDP')
             for fou_port in FOU_PORT_CANDIDATES:
                 job_set(job_id, message=f'GRE/UDP: تست UDP {fou_port}')
                 remote = {}
@@ -372,8 +389,7 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
                 except Exception as exc:
                     fou_errors.append(f'UDP {fou_port}: {exc}')
                 _cleanup_local(eid)
-                await _cleanup_remote(agent_id, eid)
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.2)
 
             if not final_transport:
                 job_set(job_id, message='مرحله 3: GRE/UDP فیلتر است؛ سوییچ خودکار به Framed TLS/TCP خروجی ایران')
@@ -397,8 +413,7 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
                     except Exception as exc:
                         tls_errors.append(f'TCP {tcp_port}: {exc}')
                     _cleanup_local(eid)
-                    await _cleanup_remote(agent_id, eid)
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(0.2)
 
                 if not final_transport:
                     raise RuntimeError(
