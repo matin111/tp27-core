@@ -34,6 +34,7 @@ if [[ "$ROLE" == "iran" ]]; then
 
   curl -fsSL "$RAW/systemd/tp27-benchmark.service" -o /etc/systemd/system/tp27-benchmark.service
   curl -fsSL "$RAW/panel/static/benchmark-ui.js" -o /opt/tp27-panel/static/benchmark-ui.js
+  curl -fsSL "$RAW/panel/static/benchmark-auto.js" -o /opt/tp27-panel/static/benchmark-auto.js
   curl -fsSL "$RAW/panel/static/index.html" -o /opt/tp27-panel/static/index.html
 
   systemctl daemon-reload
@@ -45,6 +46,7 @@ if [[ "$ROLE" == "iran" ]]; then
   echo " iperf3: $(iperf3 --version | head -1)"
   echo " service: $(systemctl is-active tp27-benchmark.service)"
   echo " listen: TCP/52701 only from 10.253.0.0/16"
+  echo " fleet bootstrap: automatic from panel"
   echo " panel data planes: untouched"
   echo "============================================================"
   exit 0
