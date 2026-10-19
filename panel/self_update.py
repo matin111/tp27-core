@@ -104,10 +104,13 @@ def _backups(limit=8):
     return rows
 
 
-def _spawn(args, job_id):
+def _unit_name(job_id):
+    return 'tp27-panel-update-' + re.sub(r'[^a-z0-9-]', '', job_id.lower())[:40]
+
+
+def _spawn(args, unit):
     if not UPDATER.exists():
         raise RuntimeError('Self-Updater نصب نشده است')
-    unit = 'tp27-panel-update-' + re.sub(r'[^a-z0-9-]', '', job_id.lower())[:40]
     cmd = [
         'systemd-run', '--unit', unit, '--collect', '--quiet',
         '--property=Type=exec',
@@ -116,7 +119,6 @@ def _spawn(args, job_id):
     p = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
     if p.returncode != 0:
         raise RuntimeError((p.stderr or p.stdout or 'systemd-run failed').strip())
-    return unit
 
 
 @router.get('/api/system/update/status')
@@ -169,6 +171,7 @@ async def update_apply(request: Request):
     if current == target:
         return {'ok': True, 'already_latest': True, 'current': current, 'target': target}
     job_id = secrets.token_hex(8)
+    unit = _unit_name(job_id)
     record = {
         'job_id': job_id,
         'state': 'queued',
@@ -178,16 +181,15 @@ async def update_apply(request: Request):
         'started_at': int(time.time()),
         'finished_at': None,
         'rollback': False,
+        'unit': unit,
     }
     _atomic_json(STATE_FILE, record)
     try:
-        unit = _spawn([target, job_id], job_id)
+        _spawn([target, job_id], unit)
     except Exception as exc:
         record.update(state='failed', message=str(exc), finished_at=int(time.time()))
         _atomic_json(STATE_FILE, record)
         raise HTTPException(status_code=500, detail=str(exc))
-    record['unit'] = unit
-    _atomic_json(STATE_FILE, record)
     return {'ok': True, 'job_id': job_id, 'target': target, 'unit': unit}
 
 
@@ -201,6 +203,7 @@ async def update_rollback(request: Request):
     if not backups:
         raise HTTPException(status_code=404, detail='Backup قابل Rollback وجود ندارد')
     job_id = secrets.token_hex(8)
+    unit = _unit_name(job_id)
     backup_name = backups[0]['name']
     record = {
         'job_id': job_id,
@@ -212,14 +215,13 @@ async def update_rollback(request: Request):
         'started_at': int(time.time()),
         'finished_at': None,
         'rollback': True,
+        'unit': unit,
     }
     _atomic_json(STATE_FILE, record)
     try:
-        unit = _spawn(['--rollback', backup_name, job_id], job_id)
+        _spawn(['--rollback', backup_name, job_id], unit)
     except Exception as exc:
         record.update(state='failed', message=str(exc), finished_at=int(time.time()))
         _atomic_json(STATE_FILE, record)
         raise HTTPException(status_code=500, detail=str(exc))
-    record['unit'] = unit
-    _atomic_json(STATE_FILE, record)
     return {'ok': True, 'job_id': job_id, 'backup': backup_name, 'unit': unit}
