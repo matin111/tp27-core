@@ -1,0 +1,26 @@
+/* TP27 single-paint boot gate.
+   Loaded in <head> so the legacy/base DOM can never flash before the
+   Premium 2027 decorators finish. Runtime JS releases the gate by adding
+   html.tp27-first-paint-ready. A CSS-only fallback reveals the page after
+   10s if JavaScript fails completely. */
+html{background:#0a0810}
+html:not(.tp27-first-paint-ready) body{
+  visibility:hidden;
+  opacity:0;
+  animation:tp27FirstPaintBodyFallback .01s 10s forwards;
+}
+html:not(.tp27-first-paint-ready)::before{
+  content:'TP27 Control';
+  position:fixed;
+  inset:0;
+  z-index:2147483647;
+  display:grid;
+  place-items:center;
+  background:#0a0810;
+  color:#a9a0b8;
+  font:700 14px Tahoma,Arial,sans-serif;
+  letter-spacing:.25px;
+  animation:tp27FirstPaintOverlayFallback .01s 10s forwards;
+}
+@keyframes tp27FirstPaintBodyFallback{to{visibility:visible;opacity:1}}
+@keyframes tp27FirstPaintOverlayFallback{to{visibility:hidden;opacity:0}}
