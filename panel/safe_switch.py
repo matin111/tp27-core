@@ -20,8 +20,9 @@ def _find(exit_id):
 
 
 def _transport(row):
-    value = str(row.get('transport') or row.get('mode') or '').lower()
-    return 'gre-fou' if value == 'gre-fou' else 'gre'
+    value = str(row.get('transport') or row.get('mode') or 'unknown').lower().strip()
+    aliases = {'gre-native': 'gre', 'fou': 'gre-fou', 'openvpn': 'openvpn-tcp', 'gost': 'gost-wss', 'tls': 'framed-tls'}
+    return aliases.get(value, value)
 
 
 def _backup(exit_id, row, target):
@@ -135,7 +136,7 @@ async def safe_switch_job(job_id, exit_id):
                 raise RuntimeError('Agent سرور خارج آفلاین است')
 
             current = _transport(old)
-            target = 'gre-fou' if current == 'gre' else 'gre'
+            target = 'gre' if current == 'gre-fou' else 'gre-fou'
             backup = _backup(exit_id, old, target)
             candidate_id = 'sw' + secrets.token_hex(6)
             job_set(job_id, state='running', message=f'ساخت {target} کنار مسیر فعلی؛ Tunnel فعلی هنوز فعال است')
