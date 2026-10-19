@@ -162,7 +162,7 @@ function injectCss(){
   const st=document.createElement('style');
   st.id='tp27ServerSpeedStyle';
   st.textContent=`
-    .srv-speed-wrap{margin-top:10px;border-top:1px solid var(--p-border);padding-top:10px;display:flex;flex-direction:column;gap:7px}.srv-speed-row{display:grid;grid-template-columns:minmax(90px,1.1fr) repeat(3,minmax(90px,1fr)) auto;gap:7px;align-items:center;padding:8px;border:1px solid var(--p-border);border-radius:12px;background:var(--p-surface-2)}.srv-speed-title b,.srv-speed-title small{display:block}.srv-speed-title b{font-size:11px}.srv-speed-title small{font-size:9px;color:var(--p-muted);margin-top:3px}.srv-speed-metric{padding:6px 8px;border-radius:9px;background:var(--p-surface);border:1px solid var(--p-border)}.srv-speed-metric span,.srv-speed-metric strong{display:block}.srv-speed-metric span{font-size:9px;color:var(--p-muted)}.srv-speed-metric strong{direction:ltr;text-align:left;font-size:13px;margin-top:3px}.srv-speed-metric strong small{font-size:8px;color:var(--p-muted)}.srv-speed-metric.download strong{color:#67e8f9}.srv-speed-metric.upload strong{color:#a7f3d0}.srv-speed-metric.ping strong{color:#c4b5fd}.srv-speed-quality{font-size:10px;border:1px solid var(--p-border);border-radius:999px;padding:5px 8px;white-space:nowrap;color:var(--p-muted)}.srv-speed-good{color:#86efac;border-color:#34d39955}.srv-speed-warn{color:#fde68a;border-color:#fbbf2455}.srv-speed-bad{color:#fda4af;border-color:#fb718555}.srv-speed-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-inline-start:auto}.srv-speed-actions .btn{white-space:nowrap}.srv-speed-status{font-size:9px;color:var(--p-muted);min-width:90px}.srv-speed-running{opacity:.65;pointer-events:none}.srv-fleet-msg{font-size:10px;color:var(--p-muted);line-height:1.7;margin-top:6px;grid-column:1/-1}@media(max-width:900px){.srv-speed-row{grid-template-columns:1fr 1fr}.srv-speed-title,.srv-speed-quality{grid-column:1/-1}.srv-speed-metric strong{text-align:center}.srv-speed-metric span{text-align:center}}
+    .srv-speed-wrap{margin-top:10px;border-top:1px solid var(--p-border);padding-top:10px;display:flex;flex-direction:column;gap:7px}.srv-speed-row{display:grid;grid-template-columns:minmax(90px,1.1fr) repeat(3,minmax(90px,1fr)) auto;gap:7px;align-items:center;padding:8px;border:1px solid var(--p-border);border-radius:12px;background:var(--p-surface-2)}.srv-speed-title b,.srv-speed-title small{display:block}.srv-speed-title b{font-size:11px}.srv-speed-title small{font-size:9px;color:var(--p-muted);margin-top:3px}.srv-speed-metric{padding:6px 8px;border-radius:9px;background:var(--p-surface);border:1px solid var(--p-border)}.srv-speed-metric span,.srv-speed-metric strong{display:block}.srv-speed-metric span{font-size:9px;color:var(--p-muted)}.srv-speed-metric strong{direction:ltr;text-align:left;font-size:13px;margin-top:3px}.srv-speed-metric strong small{font-size:8px;color:var(--p-muted)}.srv-speed-metric.download strong{color:#67e8f9}.srv-speed-metric.upload strong{color:#a7f3d0}.srv-speed-metric.ping strong{color:#c4b5fd}.srv-speed-quality{font-size:10px;border:1px solid var(--p-border);border-radius:999px;padding:5px 8px;white-space:nowrap;color:var(--p-muted)}.srv-speed-good{color:#86efac;border-color:#34d39955}.srv-speed-warn{color:#fde68a;border-color:#fbbf2455}.srv-speed-bad{color:#fda4af;border-color:#fb718555}.srv-speed-running{opacity:.65;pointer-events:none}.srv-fleet-msg{font-size:10px;color:var(--p-muted);line-height:1.7;margin-top:6px;grid-column:1/-1}.tp27-premium #agentList .agent-card .tunnel-actions{display:flex!important;grid-template-columns:none!important;justify-content:flex-end!important;align-items:center!important;gap:7px!important;padding:10px 12px 12px!important}.tp27-premium #agentList .agent-card .tunnel-actions .btn{width:auto!important;min-width:96px!important;flex:0 0 auto!important;padding:7px 12px!important}.tp27-premium #agentList .agent-card .srv-server-test{border-color:#22d3ee66!important;background:color-mix(in srgb,#22d3ee 8%,var(--p-surface-3))!important;color:#a5f3fc!important}.tp27-premium #agentList .agent-card .srv-server-test:hover{border-color:#22d3eeaa!important;background:color-mix(in srgb,#22d3ee 14%,var(--p-surface-3))!important}@media(max-width:900px){.srv-speed-row{grid-template-columns:1fr 1fr}.srv-speed-title,.srv-speed-quality{grid-column:1/-1}.srv-speed-metric strong{text-align:center}.srv-speed-metric span{text-align:center}.tp27-premium #agentList .agent-card .tunnel-actions{justify-content:stretch!important}.tp27-premium #agentList .agent-card .tunnel-actions .btn{flex:1 1 0!important;min-width:0!important}}
   `;
   document.head.appendChild(st);
 }
@@ -206,12 +206,25 @@ function decorateServerCards(){
     if(!wrap){wrap=document.createElement('div');wrap.className='srv-speed-wrap';main.appendChild(wrap)}
     const tunnels=tunnelsForAgent(a.agent_id);
     wrap.innerHTML=tunnels.length?tunnels.map(x=>results[x.id]?resultRow(x,results[x.id]):emptyRow(x)).join(''):'<div class="muted tiny">برای این سرور Tunnel ثبت نشده است.</div>';
-    let actions=card.querySelector('.srv-speed-actions');
-    if(!actions){actions=document.createElement('div');actions.className='srv-speed-actions';card.appendChild(actions)}
+
+    const legacyActions=card.querySelector('.srv-speed-actions');
+    if(legacyActions)legacyActions.remove();
+
+    const actions=card.querySelector('.tunnel-actions');
+    if(!actions)return;
     const busy=testingAgents.has(a.agent_id);
-    actions.innerHTML=`<button class="btn small primary srv-server-test ${busy?'srv-speed-running':''}" type="button" ${(!a.online||!tunnels.some(x=>x.healthy)||busy)?'disabled':''}>${busy?'در حال تست...':'تست سرعت'}</button><span class="srv-speed-status">${a.online?(tunnels.some(x=>x.healthy)?'دانلود + آپلود واقعی Tunnel':'Tunnel سالم ندارد'):'سرور آفلاین'}</span>`;
-    const btn=actions.querySelector('.srv-server-test');
-    if(btn)btn.onclick=()=>runServerTest(a.agent_id,btn);
+    let btn=actions.querySelector('.srv-server-test');
+    if(!btn){
+      btn=document.createElement('button');
+      btn.type='button';
+      btn.className='btn small srv-server-test';
+      btn.title='تست Ping، دانلود و آپلود واقعی روی Tunnel این سرور';
+      actions.appendChild(btn);
+    }
+    btn.classList.toggle('srv-speed-running',busy);
+    btn.disabled=!a.online||!tunnels.some(x=>x.healthy)||busy;
+    btn.textContent=busy?'در حال تست...':'تست سرعت';
+    btn.onclick=()=>runServerTest(a.agent_id,btn);
   });
 }
 
