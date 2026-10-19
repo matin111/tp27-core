@@ -5,6 +5,8 @@ const SPEED_RESULTS_KEY='tp27_benchmark_results_v1';
 const SPEED_PORT=52701;
 const TEST_DURATION=5;
 const TEST_PARALLEL=2;
+const SAFE_DURATION=4;
+const SAFE_PARALLEL=1;
 const testingAgents=new Set();
 let fleetBusy=false;
 
@@ -20,6 +22,20 @@ function saveResult(id,r){const all=readResults();all[id]={...r,saved_at:Date.no
 function tunnelsForAgent(agentId){return (statusSafe().exits||[]).filter(x=>x.agent_id===agentId)}
 function qualityLabel(v){return({excellent:'عالی',good:'خوب',fair:'متوسط',poor:'ضعیف'})[v]||'-'}
 function qualityClass(v){return v==='excellent'||v==='good'?'srv-speed-good':v==='fair'?'srv-speed-warn':'srv-speed-bad'}
+
+function errorText(e){return String(e&&e.message||e||'خطای نامشخص')}
+function benchmarkNotReady(msg){return /BENCHMARK_NOT_READY|پشتیبانی|unsupported|benchmark/i.test(String(msg||''))}
+function transientIperf(msg){
+  return /iperf|bits_per_second|"sender"|socket|broken pipe|connection reset|connection refused|timed out|timeout|resource temporarily unavailable|unable to|network is unreachable/i.test(String(msg||''));
+}
+function friendlyBenchmarkError(e){
+  let msg=errorText(e).replace(/\s+/g,' ').trim();
+  if(/bits_per_second|"sender"|"socket"|"streams"|"intervals"/.test(msg)){
+    return 'اندازه‌گیری iperf3 کامل نشد؛ تست پایدار هم نتیجه معتبر نداد.';
+  }
+  if(msg.length>240)msg=msg.slice(0,237)+'...';
+  return msg||'تست سرعت ناموفق بود';
+}
 
 async function req(path,opt={}){
   const r=await fetch(path,{credentials:'same-origin',headers:{'Content-Type':'application/json',...(opt.headers||{})},...opt});
@@ -63,16 +79,18 @@ async function upgradeAgent(agentId){
   await waitAgentOnline(agentId,70000);
 }
 
-async function benchmarkTunnel(x){
+async function benchmarkTunnel(x,profile={}){
   if(!x||!x.healthy)throw new Error('Tunnel سالم برای این سرور وجود ندارد');
   const target=stripCidr(x.local_ip);
   const source=stripCidr(x.remote_ip);
   if(!target||!source)throw new Error('IP داخلی Tunnel کامل نیست');
+  const duration=Math.max(2,Math.min(Number(profile.duration||TEST_DURATION),10));
+  const parallel=Math.max(1,Math.min(Number(profile.parallel||TEST_PARALLEL),4));
   const created=await req('/api/agents/'+encodeURIComponent(x.agent_id)+'/commands',{
     method:'POST',
     body:JSON.stringify({
       action:'status',
-      args:{benchmark_v1:true,id:x.id,target_ip:target,source_ip:source,port:SPEED_PORT,duration:TEST_DURATION,parallel:TEST_PARALLEL}
+      args:{benchmark_v1:true,id:x.id,target_ip:target,source_ip:source,port:SPEED_PORT,duration,parallel}
     })
   });
   const r=await waitCommand(created.command_id,70000);
@@ -82,13 +100,32 @@ async function benchmarkTunnel(x){
 }
 
 async function benchmarkTunnelAuto(x){
+  let upgraded=false;
   try{
     return await benchmarkTunnel(x);
   }catch(e){
-    const msg=String(e&&e.message||e);
-    if(!/BENCHMARK_NOT_READY|پشتیبانی|unsupported|benchmark/i.test(msg))throw e;
-    await upgradeAgent(x.agent_id);
-    return benchmarkTunnel(x);
+    const msg=errorText(e);
+    if(benchmarkNotReady(msg)){
+      await upgradeAgent(x.agent_id);
+      upgraded=true;
+      try{return await benchmarkTunnel(x)}catch(second){e=second}
+    }
+    const retryMsg=errorText(e);
+    if(transientIperf(retryMsg)){
+      await sleep(1200);
+      try{
+        return await benchmarkTunnel(x,{duration:SAFE_DURATION,parallel:SAFE_PARALLEL});
+      }catch(last){
+        const err=new Error(friendlyBenchmarkError(last));
+        err.cause=last;
+        throw err;
+      }
+    }
+    if(!upgraded&&benchmarkNotReady(retryMsg)){
+      await upgradeAgent(x.agent_id);
+      return benchmarkTunnel(x,{duration:SAFE_DURATION,parallel:SAFE_PARALLEL});
+    }
+    throw new Error(friendlyBenchmarkError(e));
   }
 }
 
@@ -150,7 +187,7 @@ async function runServerTest(agentId,button){
     if(button){button.disabled=true;button.textContent='در حال تست...'}
     await testServer(agentId);
   }catch(e){
-    alert('تست سرعت ناموفق بود: '+(e.message||e));
+    alert('تست سرعت ناموفق بود: '+friendlyBenchmarkError(e));
   }finally{
     if(button){button.disabled=false;button.textContent=old||'تست سرعت'}
   }
@@ -187,14 +224,14 @@ async function runFleetSpeeds(){
   try{
     const list=agentsSafe().filter(a=>a.online&&tunnelsForAgent(a.agent_id).some(x=>x.healthy));
     if(!list.length)throw new Error('سرور آنلاین با Tunnel سالم پیدا نشد');
-    let ok=0,fail=0;
+    let ok=0,fail=0,lastError='';
     for(let i=0;i<list.length;i++){
       const a=list[i];
       if(msg)msg.textContent=`تست سرور ${i+1}/${list.length} · ${a.hostname||a.public_ip||a.agent_id}`;
-      try{await testServer(a.agent_id);ok++}catch(_){fail++}
+      try{await testServer(a.agent_id);ok++}catch(e){fail++;lastError=friendlyBenchmarkError(e)}
     }
-    if(msg)msg.textContent=`تست تمام شد · موفق ${ok} سرور${fail?` · ناموفق ${fail}`:''}`;
-  }catch(e){if(msg)msg.textContent='خطا: '+(e.message||e)}finally{
+    if(msg)msg.textContent=`تست تمام شد · موفق ${ok} سرور${fail?` · ناموفق ${fail}${lastError?' · '+lastError:''}`:''}`;
+  }catch(e){if(msg)msg.textContent='خطا: '+friendlyBenchmarkError(e)}finally{
     fleetBusy=false;
     if(btn){btn.disabled=false;btn.textContent='تست سرعت همه سرورها'}
   }
