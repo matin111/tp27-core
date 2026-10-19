@@ -16,7 +16,9 @@ from pathlib import Path
 
 import requests
 
-PLAIN_VERSION = '1.4.0'
+PLAIN_VERSION = '1.5.0'
+SPEED_AGENT_VERSION = '1.6.0'
+POLL_SECONDS = max(0.5, min(float(os.environ.get('TP27_AGENT_POLL_SECONDS', '1') or 1), 5.0))
 BASE_AGENT = Path('/opt/tp27-exit-agent/tp27-exit-agent.py')
 GOST_ADDON = Path('/opt/tp27-exit-agent/tp27_gost_addon.py')
 OPENVPN_ADDON = Path('/opt/tp27-exit-agent/tp27_openvpn_addon.py')
@@ -50,6 +52,10 @@ def load_base():
 
 
 BASE = load_base()
+# The universal runner owns the low-latency control loop.  Advertising a new
+# base generation lets the panel upgrade existing v1.5.x agents automatically
+# without touching unrelated VPN services on the exit host.
+BASE.VERSION = SPEED_AGENT_VERSION
 if GOST_ADDON.exists():
     GOST = load_module(GOST_ADDON, 'tp27_gost_addon_plain')
     GOST.install(BASE)
@@ -279,7 +285,7 @@ def enroll(controller_url, token):
         'agent_id': aid,
         'transport': 'plain-hmac-v1',
         'transport_key': key.hex(),
-        'poll_seconds': max(2, min(int(data.get('poll_seconds', 5)), 30)),
+        'poll_seconds': max(1, min(int(data.get('poll_seconds', 1)), 30)),
         'version': BASE_VERSION,
         'plain_version': PLAIN_VERSION,
     })
@@ -292,23 +298,64 @@ def post_result(cfg, command_id, ok, result=None, error=None):
     signed_post(cfg, '/v1/result', {'command_id': command_id, 'ok': bool(ok), 'result': result or {}, 'error': error})
 
 
-def run_forever():
-    raw_cfg = json.loads(CONFIG.read_text(encoding='utf-8'))
-    if raw_cfg.get('transport') != 'plain-hmac-v1':
-        # Universal runner: HTTPS agents use the normal BASE loop while
-        # keeping the same addon/benchmark action table installed above.
-        return BASE.run_forever()
-
-    cfg = load_config()
-    poll_seconds = int(cfg.get('poll_seconds', 5))
+def run_https_fast():
+    cfg = BASE.load_config()
+    s = BASE.api_session(cfg)
     last_heartbeat = 0
     failures = 0
     while True:
         try:
+            # Poll first so provisioning commands are never queued behind the
+            # comparatively expensive heartbeat/status collection path.
+            r = s.post(BASE.api_url(cfg, '/api/agent/poll'), json={}, timeout=30)
+            if r.status_code >= 400:
+                raise RuntimeError('poll HTTP %s: %s' % (r.status_code, r.text[:300]))
+            command = r.json().get('command')
+            if command:
+                cid = command.get('id', '')
+                handler = BASE.ACTIONS.get(command.get('action', ''))
+                if not handler:
+                    BASE.post_result(s, cfg, cid, False, error='unsupported action')
+                else:
+                    try:
+                        result = handler(command.get('args') or {})
+                        BASE.post_result(s, cfg, cid, True, result=result)
+                    except Exception as exc:
+                        BASE.post_result(s, cfg, cid, False, error=str(exc)[:10000])
+                failures = 0
+                time.sleep(POLL_SECONDS)
+                continue
+
             now = time.time()
             if now - last_heartbeat >= 20:
-                signed_post(cfg, '/v1/heartbeat', BASE.heartbeat_payload(), timeout=25)
+                r = s.post(BASE.api_url(cfg, '/api/agent/heartbeat'), json=BASE.heartbeat_payload(), timeout=25)
+                if r.status_code >= 400:
+                    raise RuntimeError('heartbeat HTTP %s: %s' % (r.status_code, r.text[:300]))
                 last_heartbeat = now
+            failures = 0
+            time.sleep(POLL_SECONDS)
+        except requests.exceptions.SSLError as exc:
+            print('TLS ERROR: ' + str(exc), file=sys.stderr, flush=True)
+            time.sleep(30)
+        except Exception as exc:
+            failures += 1
+            delay = min(60, max(5, failures * 5))
+            print('agent error: %s; retry=%ss' % (exc, delay), file=sys.stderr, flush=True)
+            time.sleep(delay)
+
+
+def run_forever():
+    raw_cfg = json.loads(CONFIG.read_text(encoding='utf-8'))
+    if raw_cfg.get('transport') != 'plain-hmac-v1':
+        return run_https_fast()
+
+    cfg = load_config()
+    last_heartbeat = 0
+    failures = 0
+    while True:
+        try:
+            # Same low-latency order as HTTPS: commands first, heartbeat only
+            # while idle.  The poll request itself keeps last_seen fresh.
             reply = signed_post(cfg, '/v1/poll', {}, timeout=30)
             command = reply.get('command')
             if command:
@@ -322,8 +369,16 @@ def run_forever():
                         post_result(cfg, cid, True, result=handler(command.get('args') or {}))
                     except Exception as exc:
                         post_result(cfg, cid, False, error=str(exc)[:10000])
+                failures = 0
+                time.sleep(POLL_SECONDS)
+                continue
+
+            now = time.time()
+            if now - last_heartbeat >= 20:
+                signed_post(cfg, '/v1/heartbeat', BASE.heartbeat_payload(), timeout=25)
+                last_heartbeat = now
             failures = 0
-            time.sleep(poll_seconds)
+            time.sleep(POLL_SECONDS)
         except Exception as exc:
             failures += 1
             delay = min(60, max(5, failures * 5))
