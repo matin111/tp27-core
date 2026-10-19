@@ -18,12 +18,12 @@ import json, os, sys, time
 from pathlib import Path
 p=Path(sys.argv[1])
 obj={
-    'job_id':sys.argv[4-1],
     'state':sys.argv[2],
     'message':sys.argv[3],
-    'target':sys.argv[5-1] or None,
-    'backup':sys.argv[6-1] or None,
-    'rollback':sys.argv[7-1].lower()=='true',
+    'job_id':sys.argv[4],
+    'target':sys.argv[5] or None,
+    'backup':sys.argv[6] or None,
+    'rollback':sys.argv[7].lower()=='true',
     'updated_at':int(time.time()),
 }
 try:
@@ -78,7 +78,7 @@ verify_panel() {
 restore_backup() {
   local backup="$1"
   [[ -f "$backup/system.tar.gz" ]] || return 1
-  tar -xzf "$backup/system.tar.gz" -C /
+  tar -xzf "$backup/system.tar.gz" -C / || return 1
   if [[ -f "$backup/version.before" ]]; then
     cp -a "$backup/version.before" "$VERSION_FILE"
   else
@@ -89,6 +89,17 @@ restore_backup() {
   systemctl restart tp27-ports-reconcile.service 2>/dev/null || true
   systemctl restart tp27-plain-control.service 2>/dev/null || true
   verify_panel
+}
+
+fail_with_rollback() {
+  local message="$1" job_id="$2" target="$3" backup_name="$4" backup="$5"
+  write_state rolling_back "$message؛ Rollback خودکار شروع شد" "$job_id" "$target" "$backup_name" true
+  if restore_backup "$backup"; then
+    write_state failed "$message؛ نسخه قبلی با موفقیت بازگردانده شد" "$job_id" "$target" "$backup_name" true
+  else
+    write_state failed "$message؛ Rollback نیز ناموفق بود و بررسی دستی لازم است" "$job_id" "$target" "$backup_name" true
+  fi
+  exit 1
 }
 
 exec 9>"$LOCK_FILE"
@@ -130,8 +141,9 @@ chmod 600 "$BACKUP/version.before"
 
 write_state backup 'در حال تهیه Backup تراکنشی' "$JOB_ID" "$TARGET" "$BACKUP_NAME" false
 
-# Backup only files the panel installer may replace. Runtime state in /etc/tp27/config.json,
-# port mappings, Agent enrollment secrets and VPN services are intentionally left untouched.
+# Backup only files the panel installer may replace. Runtime state such as
+# config.json, port mappings and Agent secrets is intentionally not restored.
+set +e
 tar -C / -czf "$BACKUP/system.tar.gz" \
   --exclude='opt/tp27-panel/venv' \
   opt/tp27-panel \
@@ -139,6 +151,12 @@ tar -C / -czf "$BACKUP/system.tar.gz" \
   etc/systemd/system/tp27-ports-reconcile.service \
   etc/systemd/system/tp27-plain-control.service \
   usr/local/lib/tp27
+TAR_RC=$?
+set -e
+if [[ "$TAR_RC" -ne 0 ]]; then
+  write_state failed 'ساخت Backup ناموفق بود؛ هیچ تغییری اعمال نشد' "$JOB_ID" "$TARGET" "$BACKUP_NAME" false
+  exit 1
+fi
 
 ln -sfn "$BACKUP" "$BACKUP_ROOT/latest-successful"
 
@@ -146,12 +164,18 @@ INSTALLER="$(mktemp /tmp/tp27-panel-update.XXXXXX.sh)"
 trap 'rm -f "$INSTALLER"' EXIT
 
 write_state downloading 'در حال دریافت نسخه جدید از GitHub' "$JOB_ID" "$TARGET" "$BACKUP_NAME" false
+set +e
 curl -fsSL --connect-timeout 10 --max-time 90 \
   "$REPO_RAW/$TARGET/install-panel.sh" -o "$INSTALLER"
+CURL_RC=$?
+set -e
+if [[ "$CURL_RC" -ne 0 ]]; then
+  write_state failed 'دریافت نسخه جدید ناموفق بود؛ هیچ فایل فعالی تغییر نکرد' "$JOB_ID" "$TARGET" "$BACKUP_NAME" false
+  exit 1
+fi
 chmod 700 "$INSTALLER"
 
 write_state installing 'در حال نصب نسخه جدید؛ Tunnelهای فعال Restart نمی‌شوند' "$JOB_ID" "$TARGET" "$BACKUP_NAME" false
-
 set +e
 TP27_REPO_RAW="$REPO_RAW/$TARGET" \
 TP27_INSTALL_COMMIT="$TARGET" \
@@ -163,16 +187,9 @@ if [[ "$RC" -eq 0 ]] && verify_panel; then
   printf '%s\n' "$TARGET" > "$VERSION_FILE"
   chmod 600 "$VERSION_FILE"
   write_state done 'بروزرسانی با موفقیت انجام شد' "$JOB_ID" "$TARGET" "$BACKUP_NAME" false
-  # Keep the newest five backups only; never follow the latest-successful symlink.
   mapfile -t OLD < <(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -nr | awk 'NR>5{$1=""; sub(/^ /,""); print}')
   for p in "${OLD[@]:-}"; do [[ -n "$p" ]] && rm -rf -- "$p"; done
   exit 0
 fi
 
-write_state rolling_back 'نصب یا Health Check ناموفق بود؛ Rollback خودکار شروع شد' "$JOB_ID" "$TARGET" "$BACKUP_NAME" true
-if restore_backup "$BACKUP"; then
-  write_state failed 'بروزرسانی ناموفق بود و نسخه قبلی با موفقیت بازگردانده شد' "$JOB_ID" "$TARGET" "$BACKUP_NAME" true
-else
-  write_state failed 'بروزرسانی و Rollback هر دو ناموفق بودند؛ بررسی دستی لازم است' "$JOB_ID" "$TARGET" "$BACKUP_NAME" true
-fi
-exit 1
+fail_with_rollback 'نصب یا Health Check نسخه جدید ناموفق بود' "$JOB_ID" "$TARGET" "$BACKUP_NAME" "$BACKUP"
