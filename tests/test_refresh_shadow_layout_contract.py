@@ -9,7 +9,10 @@ def test_refresh_shadow_copies_live_grid_layout():
     assert "shadow.dataset.tp27ShadowFor=id" in js
 
 
-def test_refresh_shadow_does_not_force_auto_width():
+def test_refresh_shadow_rule_does_not_force_auto_width():
     js = Path('panel/static/ui-stability.js').read_text(encoding='utf-8')
-    assert '.tp27-refresh-shadow{position:absolute!important' in js
-    assert 'width:auto' not in js
+    marker = '.tp27-refresh-shadow{'
+    assert marker in js
+    shadow_rule = js.split(marker, 1)[1].split('}', 1)[0]
+    assert 'width:auto' not in shadow_rule
+    assert "shadow.style.setProperty('width',width+'px','important')" in js
