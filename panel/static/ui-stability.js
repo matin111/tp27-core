@@ -154,6 +154,38 @@ html.tp27-ui-stabilizing body.tp27-premium:before{content:'TP27 Control';positio
   .tp27-premium .tunnel-card .tunnel-actions{grid-template-columns:repeat(2,minmax(0,1fr))}
   .tp27-premium .tunnel-card .badge{max-width:100%}
 }
+
+/* Keep the server-card action footer identical in the live list and the
+   id-stripped refresh shadow.  Without this, the shadow falls back to the
+   generic tunnel grid and the Manage/Speed buttons jump on every refresh. */
+.tp27-premium #agentList .agent-card .tunnel-actions,
+.tp27-premium .tp27-refresh-shadow[data-tp27-shadow-for="agentList"] .agent-card .tunnel-actions{
+  display:flex!important;
+  grid-template-columns:none!important;
+  direction:rtl!important;
+  justify-content:flex-start!important;
+  align-items:center!important;
+  gap:7px!important;
+  padding:10px 12px 12px!important;
+}
+.tp27-premium #agentList .agent-card .tunnel-actions .btn,
+.tp27-premium .tp27-refresh-shadow[data-tp27-shadow-for="agentList"] .agent-card .tunnel-actions .btn{
+  width:auto!important;
+  min-width:96px!important;
+  flex:0 0 auto!important;
+  padding:7px 12px!important;
+}
+@media(max-width:900px){
+  .tp27-premium #agentList .agent-card .tunnel-actions,
+  .tp27-premium .tp27-refresh-shadow[data-tp27-shadow-for="agentList"] .agent-card .tunnel-actions{
+    justify-content:flex-start!important;
+  }
+  .tp27-premium #agentList .agent-card .tunnel-actions .btn,
+  .tp27-premium .tp27-refresh-shadow[data-tp27-shadow-for="agentList"] .agent-card .tunnel-actions .btn{
+    min-width:96px!important;
+    flex:0 0 auto!important;
+  }
+}
 `;
 document.head.appendChild(style);
 document.documentElement.classList.add('tp27-ui-stabilizing');
