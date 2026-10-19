@@ -49,15 +49,26 @@ echo "TARGET=${TARGET:-main}"
 fetch panel/requirements.txt "$PANEL/requirements.txt"
 "$PANEL/venv/bin/pip" install -r "$PANEL/requirements.txt" >/dev/null
 
-for f in app.py auth.py provision.py provision_password.py provision_agent.py agent_control.py ports.py portplan.py plain_control.py self_update.py; do
+for f in app.py auth.py provision.py provision_password.py provision_agent.py agent_control.py ports.py portplan.py plain_control.py self_update.py safe_switch.py safe_switch_router.py; do
   fetch "panel/$f" "$PANEL/$f"
 done
 fetch panel/provision_resilient.py "$PANEL/provision_resilient.py"
 fetch panel/provision_multicore.py "$PANEL/provision_gre.py"
 
-for f in index.html login.html style.css app.js fast-ui.js agent-manage.js premium.css premium-ui.js runtime-refresh-fix.js benchmark-ui.js benchmark-auto.js server-speed-ui.js speed-recovery-fix.js self-update.js; do
+for f in index.html login.html style.css app.js fast-ui.js agent-manage.js premium.css premium-ui.js runtime-refresh-fix.js benchmark-ui.js benchmark-auto.js server-speed-ui.js speed-recovery-fix.js safe-switch-ui.js self-update.js; do
   fetch "panel/static/$f" "$STATIC/$f"
 done
+
+python3 - "$STATIC/index.html" <<'PY'
+from pathlib import Path
+p=Path('/opt/tp27-panel/static/index.html')
+s=p.read_text(encoding='utf-8')
+tag='<script src="/static/safe-switch-ui.js"></script>'
+if tag not in s:
+    anchor='<script src="/static/self-update.js"></script>'
+    s=s.replace(anchor, tag+'\n'+anchor) if anchor in s else s.replace('</body>', tag+'\n</body>')
+    p.write_text(s,encoding='utf-8')
+PY
 
 # Keep the live tp27-panel.service untouched so a trusted IP certificate path
 # already patched into ExecStart can never be replaced by the repository default.
@@ -94,7 +105,10 @@ s=p.read_text(encoding='utf-8')
 marker='# TP27_SELF_UPDATE_ROUTER_V1'
 if marker not in s:
     s=s.rstrip()+"\n\n"+marker+"\nfrom self_update import router as self_update_router\napp.include_router(self_update_router)\n"
-    p.write_text(s,encoding='utf-8')
+switch_marker='# TP27_SAFE_SWITCH_ROUTER_V1'
+if switch_marker not in s:
+    s=s.rstrip()+"\n\n"+switch_marker+"\nfrom safe_switch_router import router as safe_switch_router\napp.include_router(safe_switch_router)\n"
+p.write_text(s,encoding='utf-8')
 PY
 
 "$PANEL/venv/bin/python" -m py_compile \
@@ -103,6 +117,7 @@ PY
   "$PANEL/provision_resilient.py" "$PANEL/provision_gre.py" \
   "$PANEL/agent_control.py" "$PANEL/plain_control.py" \
   "$PANEL/ports.py" "$PANEL/portplan.py" "$PANEL/self_update.py" \
+  "$PANEL/safe_switch.py" "$PANEL/safe_switch_router.py" \
   /usr/local/lib/tp27/tp27-link-preflight \
   /usr/local/lib/tp27/tp27-framed-tls.py \
   /usr/local/lib/tp27/tp27-gost-core.py
