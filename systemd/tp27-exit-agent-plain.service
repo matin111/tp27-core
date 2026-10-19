@@ -10,7 +10,10 @@ Restart=always
 RestartSec=5
 User=root
 Group=root
-NoNewPrivileges=true
+# The Agent already runs as root and its managed benchmark bootstrap may invoke
+# apt, whose helper intentionally switches to the _apt uid.  Blocking setuid
+# here breaks that safe drop and produces seteuid/setresuid EPERM on some VPSes.
+NoNewPrivileges=false
 PrivateTmp=true
 ProtectHome=true
 ProtectKernelTunables=true
