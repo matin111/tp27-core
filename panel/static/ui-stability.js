@@ -95,12 +95,29 @@ function freezeDashboard(){
   return ()=>{for(const fn of cleanups.reverse())try{fn()}catch(_){}};
 }
 
+function expectedCounts(){
+  let tunnelCount=0,agentCount=0;
+  try{tunnelCount=(currentStatus.exits||[]).length}catch(_){ }
+  try{agentCount=(agents||[]).length}catch(_){ }
+  return {tunnelCount,agentCount};
+}
+
 function uiReady(){
-  const tunnelCards=[...document.querySelectorAll('#exitList .tunnel-card')];
-  const agentCards=[...document.querySelectorAll('#agentList .agent-card')];
+  if(!document.body.classList.contains('tp27-premium'))return false;
+  const exitList=document.getElementById('exitList');
+  const agentList=document.getElementById('agentList');
+  if(!exitList||!agentList)return false;
+  if(/در حال دریافت/.test(exitList.textContent||'')||/در حال دریافت/.test(agentList.textContent||''))return false;
+
+  const tunnelCards=[...exitList.querySelectorAll('.tunnel-card')];
+  const agentCards=[...agentList.querySelectorAll('.agent-card')];
+  const expected=expectedCounts();
+  if(tunnelCards.length!==expected.tunnelCount||agentCards.length!==expected.agentCount)return false;
+
   const tunnelsReady=tunnelCards.every(card=>{
     const actions=card.querySelector('.tunnel-actions');
-    return !!card.querySelector('.premium-card-meta') && !!actions && !!actions.querySelector('.bm-btn') && !!actions.querySelector('.premium-stability-btn');
+    const safe=actions&&actions.querySelector('.premium-rebuild-btn');
+    return !!card.querySelector('.premium-card-meta') && !!actions && !!actions.querySelector('.bm-btn') && !!actions.querySelector('.premium-stability-btn') && !!safe && safe.classList.contains('tp27-safe-ready');
   });
   const agentsReady=agentCards.every(card=>!!card.querySelector('.srv-speed-wrap'));
   return tunnelsReady&&agentsReady;
