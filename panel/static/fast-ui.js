@@ -11,6 +11,7 @@ async function loadStatus(){
       const fast=x.mode==='fast-pool'||x.mode==='reverse-fast-pool'||total>1;
       const reverse=x.mode==='reverse-fast-pool'||x.transport_direction==='exit-to-iran';
       const state=x.healthy?(x.degraded?'DEGRADED':'ONLINE'):'OFFLINE';
+      const mappingCount=(x.mappings||[]).length;
       return `
       <div class="exit tunnel-card">
         <div class="exit-main">
@@ -19,6 +20,7 @@ async function loadStatus(){
           <div class="badges">
             ${fast?`<span class="badge"><b>${reverse?'REVERSE FAST':'FAST'}</b> ${up}/${total} کانال</span>`:''}
             <span class="badge"><b>${state}</b></span>
+            ${mappingCount===0?'<span class="badge"><b>بدون Port Mapping</b></span>':''}
           </div>
           ${mappingBadges(x.mappings)}
         </div>
@@ -34,6 +36,8 @@ async function loadStatus(){
 
 function renderDiagnosis(d){
   $('diagTitle').textContent='بررسی تونل '+(d.id||'');
+  const x=tunnelById(d.id||'');
+  const mappings=(x&&x.mappings)||[];
   let html='';
   html+=diagFlag('Agent سرور خارج',!!d.agent_online);
   html+=diagFlag('حداقل یک Link ایران',!!d.local_service);
@@ -45,9 +49,12 @@ function renderDiagnosis(d){
       html+=`<div class="diag-row"><span class="dot ${ch.healthy?'good':'bad'}"></span><span>${esc(ch.id||'-')} · ${esc(ch.interface||'-')} · ${esc(ch.remote_ip||'-')}</span><b>${ch.healthy?'ONLINE':'DOWN'}</b></div>`;
     });
   }
+  html+=`<div class="diag-row"><span class="dot ${mappings.length?'good':'wait'}"></span><span>Port Mapping</span><b>${mappings.length?esc(mappings.length)+' فعال':'تعریف نشده'}</b></div>`;
   html+=`<div class="diag-meta">${esc(d.endpoint||'-')}:${esc(d.port||'-')} · ${esc(d.interface||'-')} · ${esc(d.remote_ip||'-')}</div>`;
+  if(!mappings.length)html+='<div class="muted">این Link سالم است اما Port Mapping ندارد؛ برای عبور سرویس کاربران باید پورت‌های موردنیاز روی همین Tunnel ثبت شوند.</div>';
   if(d.local_log)html+=`<h4>لاگ ایران</h4><pre>${esc(d.local_log)}</pre>`;
   if(d.remote_status)html+=`<h4>وضعیت سرور خارج</h4><pre>${esc(d.remote_status)}</pre>`;
+  html+=`<div class="actions wizard-actions"><button class="btn small" type="button" onclick="startTunnelStability('${esc(d.id||'')}')">تست پایداری ۱۲ دور</button></div><div id="stabilityBox" class="muted"></div>`;
   $('diagBody').innerHTML=html;
   $('repairBtn').textContent=d.healthy?'Restart Link':'تعمیر خودکار';
   $('repairBtn').disabled=false;
@@ -121,3 +128,131 @@ async function upgradeManagedTunnelFast(){
     await refreshAll();
   }
 }
+
+let tp27StabilityToken=0;
+
+function tunnelDoctorAdvice(d,x){
+  const notes=[];
+  if(!d.agent_online)notes.push('Agent خارج آفلاین است؛ مسیر کنترل سرور خارج را بررسی کنید.');
+  if(!d.local_service)notes.push('سرویس Link ایران فعال نیست؛ قبل از تغییر Port Mapping سرویس را بررسی کنید.');
+  if(!d.interface_up)notes.push('Interface تونل روی ایران وجود ندارد یا Down است.');
+  if(d.interface_up&&!d.peer_ping)notes.push('Interface بالا است ولی Peer پاسخ نمی‌دهد؛ Data Plane را بررسی کنید.');
+  if(Number(d.channels_total||0)>1&&Number(d.channels_healthy||0)<Number(d.channels_total||0))notes.push('Pool در حالت DEGRADED است؛ همه کانال‌ها سالم نیستند.');
+  if(!((x&&x.mappings)||[]).length)notes.push('هیچ Port Mapping برای این Tunnel ثبت نشده است.');
+  return notes;
+}
+
+async function startTunnelStability(id){
+  if(!id)return;
+  const token=++tp27StabilityToken;
+  const box=$('stabilityBox');
+  if(!box)return;
+  const rounds=12;
+  let attempts=0;
+  let success=0;
+  let degraded=0;
+  let currentFailureStreak=0;
+  let maxFailureStreak=0;
+  let lastError='';
+  box.textContent='تست پایداری شروع شد؛ ۰/۱۲';
+
+  for(let i=0;i<rounds;i++){
+    if(token!==tp27StabilityToken)return;
+    attempts++;
+    try{
+      const d=await api('/api/exits/'+encodeURIComponent(id)+'/diagnose');
+      if(d.healthy){
+        success++;
+        currentFailureStreak=0;
+        if(d.degraded)degraded++;
+      }else{
+        currentFailureStreak++;
+        maxFailureStreak=Math.max(maxFailureStreak,currentFailureStreak);
+        const notes=tunnelDoctorAdvice(d,tunnelById(id));
+        lastError=notes[0]||'Health Check ناموفق بود';
+      }
+    }catch(e){
+      currentFailureStreak++;
+      maxFailureStreak=Math.max(maxFailureStreak,currentFailureStreak);
+      lastError=e.message||'خطای ارتباط با پنل';
+    }
+    const pct=Math.round((success/attempts)*100);
+    box.innerHTML=`<b>پایداری ${pct}%</b> · دور ${attempts}/${rounds} · بیشترین شکست متوالی ${maxFailureStreak}${degraded?` · DEGRADED ${degraded} دور`:''}${lastError?`<br><span class="muted">آخرین خطا: ${esc(lastError)}</span>`:''}`;
+    if(i<rounds-1)await sleep(750);
+  }
+}
+
+function ensureFleetDoctorUi(){
+  if($('fleetDoctorModal'))return;
+  const topActions=document.querySelector('.top .actions');
+  if(topActions&&!$('fleetDoctorBtn')){
+    const btn=document.createElement('button');
+    btn.id='fleetDoctorBtn';
+    btn.className='btn';
+    btn.type='button';
+    btn.textContent='Doctor';
+    btn.onclick=openFleetDoctor;
+    topActions.insertBefore(btn,topActions.firstChild);
+  }
+  const modal=document.createElement('div');
+  modal.id='fleetDoctorModal';
+  modal.className='modal hidden';
+  modal.setAttribute('role','dialog');
+  modal.setAttribute('aria-modal','true');
+  modal.innerHTML=`<div class="modal-card diag-card"><div class="section-title modal-head"><h3>Doctor تونل‌ها</h3><button class="btn small" type="button" onclick="closeFleetDoctor()">×</button></div><div class="muted">بررسی فقط خواندنی است و سرویس‌ها را Restart نمی‌کند.</div><div id="fleetDoctorBody" class="diag-body"></div><div class="actions wizard-actions"><button class="btn primary" type="button" onclick="runFleetDoctor()">بررسی دوباره</button><button class="btn" type="button" onclick="closeFleetDoctor()">بستن</button></div></div>`;
+  document.body.appendChild(modal);
+}
+
+function openFleetDoctor(){
+  ensureFleetDoctorUi();
+  $('fleetDoctorModal').classList.remove('hidden');
+  runFleetDoctor();
+}
+
+function closeFleetDoctor(){
+  if($('fleetDoctorModal'))$('fleetDoctorModal').classList.add('hidden');
+}
+
+async function runFleetDoctor(){
+  ensureFleetDoctorUi();
+  const body=$('fleetDoctorBody');
+  body.innerHTML='<div class="muted">در حال بررسی همه Tunnelها...</div>';
+  try{
+    await loadStatus();
+    const exits=currentStatus.exits||[];
+    if(!exits.length){body.innerHTML='<div class="muted">Tunnel فعالی وجود ندارد.</div>';return}
+    const results=[];
+    for(const x of exits){
+      try{
+        const d=await api('/api/exits/'+encodeURIComponent(x.id)+'/diagnose');
+        results.push({x,d,error:null});
+      }catch(e){
+        results.push({x,d:null,error:e.message||'خطا'});
+      }
+    }
+    const healthy=results.filter(r=>r.d&&r.d.healthy).length;
+    const degraded=results.filter(r=>r.d&&r.d.degraded).length;
+    let html=`<div class="diag-meta">سالم ${healthy}/${results.length}${degraded?` · DEGRADED ${degraded}`:''}</div>`;
+    for(const r of results){
+      if(r.error){
+        html+=`<div class="diag-row"><span class="dot bad"></span><span>${esc(r.x.id)}</span><b>${esc(r.error)}</b></div>`;
+        continue;
+      }
+      const notes=tunnelDoctorAdvice(r.d,r.x);
+      const ok=r.d.healthy&&!r.d.degraded;
+      html+=`<div class="diag-row"><span class="dot ${ok?'good':r.d.healthy?'wait':'bad'}"></span><span>${esc(r.x.id)} · ${esc(r.x.endpoint||'-')}</span><b>${r.d.healthy?(r.d.degraded?'DEGRADED':'ONLINE'):'OFFLINE'}</b></div>`;
+      if(notes.length)html+=`<div class="muted">${notes.map(esc).join(' · ')}</div>`;
+    }
+    body.innerHTML=html;
+  }catch(e){
+    body.innerHTML='<div class="err">'+esc(e.message||'خطا در Doctor')+'</div>';
+  }
+}
+
+const tp27CloseTunnelDiagBase=closeTunnelDiag;
+closeTunnelDiag=function(){
+  tp27StabilityToken++;
+  tp27CloseTunnelDiagBase();
+};
+
+ensureFleetDoctorUi();
