@@ -163,7 +163,7 @@ html.tp27-ui-stabilizing body.tp27-premium:before{content:'TP27 Control';positio
   display:flex!important;
   grid-template-columns:none!important;
   direction:rtl!important;
-  justify-content:flex-start!important;
+  justify-content:flex-end!important;
   align-items:center!important;
   gap:7px!important;
   padding:10px 12px 12px!important;
@@ -178,7 +178,7 @@ html.tp27-ui-stabilizing body.tp27-premium:before{content:'TP27 Control';positio
 @media(max-width:900px){
   .tp27-premium #agentList .agent-card .tunnel-actions,
   .tp27-premium .tp27-refresh-shadow[data-tp27-shadow-for="agentList"] .agent-card .tunnel-actions{
-    justify-content:flex-start!important;
+    justify-content:flex-end!important;
   }
   .tp27-premium #agentList .agent-card .tunnel-actions .btn,
   .tp27-premium .tp27-refresh-shadow[data-tp27-shadow-for="agentList"] .agent-card .tunnel-actions .btn{
@@ -281,7 +281,7 @@ function freezeList(id){
 
 function freezeDashboard(){
   const cleanups=[freezeList('agentList'),freezeList('exitList')].filter(Boolean);
-  return ()=>{for(const fn of cleanups.reverse())try{fn()}catch(_){}};
+  return ()=>{for(const fn of cleanups.reverse())try{fn()}catch(_){} };
 }
 
 function expectedCounts(){
