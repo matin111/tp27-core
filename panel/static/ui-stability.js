@@ -10,7 +10,7 @@ style.id='tp27UiStabilityStyle';
 style.textContent=`
 html.tp27-ui-stabilizing body.tp27-premium .wrap{visibility:hidden!important}
 html.tp27-ui-stabilizing body.tp27-premium:before{content:'TP27 Control';position:fixed;inset:0;display:grid;place-items:center;z-index:99999;color:var(--p-muted);font:700 14px Tahoma,Arial,sans-serif;letter-spacing:.3px;pointer-events:none}
-.tp27-refresh-shadow{position:absolute!important;z-index:20!important;pointer-events:none!important;margin-top:0!important;width:auto}
+.tp27-refresh-shadow{position:absolute!important;z-index:20!important;pointer-events:none!important;margin-top:0!important}
 .tp27-refresh-live-hidden{visibility:hidden!important}
 .tp27-premium .tunnel-card .exit-main{width:100%;min-width:0}
 .tp27-premium .tunnel-card .badges{width:100%;display:flex!important;flex-wrap:wrap!important;gap:6px!important;align-items:center;justify-content:flex-start}
@@ -68,6 +68,26 @@ function stripIds(node){
   node.querySelectorAll('[id]').forEach(x=>x.removeAttribute('id'));
 }
 
+function copyLayoutSnapshot(live,shadow){
+  const computed=getComputedStyle(live);
+  const props=[
+    'display','grid-template-columns','grid-template-rows','grid-auto-flow',
+    'grid-auto-columns','grid-auto-rows','column-gap','row-gap',
+    'align-items','justify-items','align-content','justify-content','direction'
+  ];
+  for(const prop of props){
+    const value=computed.getPropertyValue(prop);
+    if(value)shadow.style.setProperty(prop,value,'important');
+  }
+  const rect=live.getBoundingClientRect();
+  const width=Math.max(0,rect.width);
+  const height=Math.max(0,rect.height);
+  shadow.style.setProperty('width',width+'px','important');
+  shadow.style.setProperty('min-width',width+'px','important');
+  shadow.style.setProperty('max-width',width+'px','important');
+  shadow.style.setProperty('min-height',height+'px','important');
+}
+
 function freezeList(id){
   const live=document.getElementById(id);
   if(!live||!live.parentElement||!live.children.length)return null;
@@ -75,12 +95,12 @@ function freezeList(id){
   const prevPosition=host.style.position;
   if(getComputedStyle(host).position==='static')host.style.position='relative';
   const shadow=live.cloneNode(true);
+  copyLayoutSnapshot(live,shadow);
+  shadow.dataset.tp27ShadowFor=id;
   stripIds(shadow);
   shadow.classList.add('tp27-refresh-shadow');
-  shadow.style.top=live.offsetTop+'px';
-  shadow.style.left=live.offsetLeft+'px';
-  shadow.style.width=live.offsetWidth+'px';
-  shadow.style.minHeight=live.offsetHeight+'px';
+  shadow.style.setProperty('top',live.offsetTop+'px','important');
+  shadow.style.setProperty('left',live.offsetLeft+'px','important');
   live.classList.add('tp27-refresh-live-hidden');
   host.appendChild(shadow);
   return ()=>{
