@@ -15,6 +15,7 @@ AGENT_UPGRADE_TARGET = '1.6.0'
 AGENT_RECONNECT_POLL = 1.0
 AGENT_UPGRADE_COMMAND_TIMEOUT = 90
 AGENT_UPGRADE_RECONNECT_TIMEOUT = 90
+KERNEL_TIMING_VERSION = 3
 GRE_POOL = ipaddress.ip_network('10.253.0.0/16')
 DEFAULT_MTU = 1400
 TLS_MTU = 1300
@@ -32,6 +33,27 @@ HEALTH_RETRY_DELAY = 0.35
 GRE_LOCAL_SETTLE = 0.10
 TLS_LOCAL_SETTLE = 0.25
 CANDIDATE_CLEANUP_SETTLE = 0.05
+
+
+def _elapsed_ms(started):
+    return max(0, int(round((time.monotonic() - started) * 1000)))
+
+
+def _timing_add(timings, stage, started, **meta):
+    if timings is None:
+        return None
+    row = {'stage': stage, 'ms': _elapsed_ms(started)}
+    row.update({k: v for k, v in meta.items() if v is not None})
+    timings.append(row)
+    return row
+
+
+def _kernel_timing_payload(started, timings):
+    return {
+        'version': KERNEL_TIMING_VERSION,
+        'total_ms': _elapsed_ms(started),
+        'stages': list(timings or []),
+    }
 
 
 def _version_tuple(value):
@@ -125,10 +147,6 @@ async def _ensure_agent(agent_id, job_id):
     try:
         result = await wait_command(command['id'], timeout=AGENT_UPGRADE_COMMAND_TIMEOUT)
     except TimeoutError:
-        # Legacy v1.5.x agents may spend more than 90 seconds downloading the
-        # new runner/runtime before they can post the command result. A command
-        # timeout is therefore not proof of upgrade failure. Keep observing the
-        # authenticated heartbeat and accept only the required version.
         job_set(
             job_id,
             message=(
@@ -291,16 +309,33 @@ def _diagnostics(eid, iface, remote_result, ping_text):
 
 async def _build_gre(agent_id, eid, iface, iran_ip, endpoint,
                      local_ip, remote_ip, local_addr, remote_addr,
-                     gre_key, mtu, transport='gre', fou_port=0):
-    _write_local_gre(eid, iface, local_ip, remote_addr, iran_ip, endpoint,
-                     gre_key, mtu, agent_id, transport, fou_port)
-    _start_local(eid, transport)
-    await asyncio.sleep(GRE_LOCAL_SETTLE)
-    remote_result = await _provision_remote_gre(
-        agent_id, eid, iran_ip, endpoint, remote_ip, local_addr,
-        gre_key, mtu, transport, fou_port,
-    )
-    healthy, ping_text = await _health_peer(iface, remote_addr, tries=5)
+                     gre_key, mtu, transport='gre', fou_port=0,
+                     timings=None, timing_prefix=None):
+    prefix = timing_prefix or transport
+
+    stage_started = time.monotonic()
+    try:
+        _write_local_gre(eid, iface, local_ip, remote_addr, iran_ip, endpoint,
+                         gre_key, mtu, agent_id, transport, fou_port)
+        _start_local(eid, transport)
+        await asyncio.sleep(GRE_LOCAL_SETTLE)
+    finally:
+        _timing_add(timings, f'{prefix}.local_start', stage_started)
+
+    stage_started = time.monotonic()
+    try:
+        remote_result = await _provision_remote_gre(
+            agent_id, eid, iran_ip, endpoint, remote_ip, local_addr,
+            gre_key, mtu, transport, fou_port,
+        )
+    finally:
+        _timing_add(timings, f'{prefix}.remote_provision', stage_started)
+
+    stage_started = time.monotonic()
+    try:
+        healthy, ping_text = await _health_peer(iface, remote_addr, tries=5)
+    finally:
+        _timing_add(timings, f'{prefix}.health_gate', stage_started)
     return healthy, ping_text, remote_result
 
 
@@ -321,13 +356,21 @@ async def _build_tls(agent_id, eid, iface, iran_ip, endpoint,
 
 async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
                                   mtu=DEFAULT_MTU, mappings=None):
+    kernel_started = time.monotonic()
+    kernel_timings = []
     eid = None
     final_transport = None
     final_port = None
     final_remote_result = {}
     raw_diag = ''
     try:
-        agent = await _ensure_agent(agent_id, job_id)
+        stage_started = time.monotonic()
+        try:
+            agent = await _ensure_agent(agent_id, job_id)
+        finally:
+            _timing_add(kernel_timings, 'agent_ready', stage_started)
+
+        stage_started = time.monotonic()
         endpoint = str(agent.get('public_ip') or '').strip()
         if ipaddress.ip_address(endpoint).version != 4:
             raise RuntimeError('TP27 به IPv4 عمومی سرور خارج نیاز دارد')
@@ -360,24 +403,36 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
         local_addr = str(ipaddress.ip_interface(local_ip).ip)
         gre_key = _gre_key(eid, iran_ip, endpoint)
         iface = iface_for(eid)
+        _timing_add(kernel_timings, 'context_prepare', stage_started)
 
         profile = 'DEEP' if DEEP_SCAN else 'FAST'
         job_set(job_id, state='running', message=f'AUTO TRANSPORT {profile}: Raw GRE → GRE/UDP → Framed TLS/TCP')
+
+        stage_started = time.monotonic()
         _cleanup_local(eid)
         await _cleanup_remote(agent_id, eid)
+        _timing_add(kernel_timings, 'pre_cleanup', stage_started)
 
         job_set(job_id, message=f'مرحله 1: Raw GRE {iran_ip} ↔ {endpoint}')
         raw_remote = {}
         raw_ping = ''
+        candidate_started = time.monotonic()
         try:
-            healthy, raw_ping, raw_remote = await _build_gre(
-                agent_id, eid, iface, iran_ip, endpoint,
-                local_ip, remote_ip, local_addr, remote_addr,
-                gre_key, mtu, 'gre', 0,
+            try:
+                healthy, raw_ping, raw_remote = await _build_gre(
+                    agent_id, eid, iface, iran_ip, endpoint,
+                    local_ip, remote_ip, local_addr, remote_addr,
+                    gre_key, mtu, 'gre', 0,
+                    timings=kernel_timings, timing_prefix='raw_gre',
+                )
+            except Exception as exc:
+                healthy = False
+                raw_ping = str(exc)
+        finally:
+            _timing_add(
+                kernel_timings, 'raw_gre.candidate_total', candidate_started,
+                outcome='online' if locals().get('healthy') else 'failed',
             )
-        except Exception as exc:
-            healthy = False
-            raw_ping = str(exc)
 
         if healthy:
             final_transport = 'gre'
@@ -385,8 +440,10 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
             job_set(job_id, message='Raw GRE دوطرفه سالم است؛ سریع‌ترین مسیر انتخاب شد')
         else:
             raw_diag = _diagnostics(eid, iface, raw_remote, raw_ping)
+            stage_started = time.monotonic()
             _cleanup_local(eid)
             await asyncio.sleep(CANDIDATE_CLEANUP_SETTLE)
+            _timing_add(kernel_timings, 'raw_gre.cleanup', stage_started)
 
             fou_errors = []
             job_set(job_id, message='مرحله 2: Raw GRE سالم نیست؛ تست سریع GRE/UDP')
@@ -394,23 +451,37 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
                 job_set(job_id, message=f'GRE/UDP: تست UDP {fou_port}')
                 remote = {}
                 ping_text = ''
+                prefix = f'gre_fou.{fou_port}'
+                candidate_started = time.monotonic()
+                healthy = False
                 try:
-                    healthy, ping_text, remote = await _build_gre(
-                        agent_id, eid, iface, iran_ip, endpoint,
-                        local_ip, remote_ip, local_addr, remote_addr,
-                        gre_key, mtu, 'gre-fou', fou_port,
+                    try:
+                        healthy, ping_text, remote = await _build_gre(
+                            agent_id, eid, iface, iran_ip, endpoint,
+                            local_ip, remote_ip, local_addr, remote_addr,
+                            gre_key, mtu, 'gre-fou', fou_port,
+                            timings=kernel_timings, timing_prefix=prefix,
+                        )
+                        if healthy:
+                            final_transport = 'gre-fou'
+                            final_port = fou_port
+                            final_remote_result = remote
+                            job_set(job_id, message=f'GRE/UDP روی UDP {fou_port} ONLINE شد')
+                            break
+                        fou_errors.append(f'UDP {fou_port}: Peer Ping نشد')
+                    except Exception as exc:
+                        fou_errors.append(f'UDP {fou_port}: {exc}')
+                finally:
+                    _timing_add(
+                        kernel_timings, f'{prefix}.candidate_total', candidate_started,
+                        outcome='online' if healthy else 'failed',
                     )
-                    if healthy:
-                        final_transport = 'gre-fou'
-                        final_port = fou_port
-                        final_remote_result = remote
-                        job_set(job_id, message=f'GRE/UDP روی UDP {fou_port} ONLINE شد')
-                        break
-                    fou_errors.append(f'UDP {fou_port}: Peer Ping نشد')
-                except Exception as exc:
-                    fou_errors.append(f'UDP {fou_port}: {exc}')
+                if final_transport:
+                    break
+                stage_started = time.monotonic()
                 _cleanup_local(eid)
                 await asyncio.sleep(CANDIDATE_CLEANUP_SETTLE)
+                _timing_add(kernel_timings, f'{prefix}.cleanup', stage_started)
 
             if not final_transport:
                 job_set(job_id, message='مرحله 3: GRE/UDP فیلتر است؛ سوییچ خودکار به Framed TLS/TCP خروجی ایران')
@@ -458,15 +529,19 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
             'public_local': iran_ip, 'public_remote': endpoint,
             'service': _service_name(eid, final_transport),
         }
+        stage_started = time.monotonic()
         core.setdefault('exits', [])
         core['exits'] = [x for x in core['exits'] if x.get('id') != eid] + [rec]
         atomic_json(CORE_CONFIG, core)
+        _timing_add(kernel_timings, 'commit_config', stage_started)
 
         applied = []
         if port_plan:
+            stage_started = time.monotonic()
             label = {'gre': 'GRE FAST', 'gre-fou': 'GRE/UDP FAST', 'framed-tls': 'TLS/TCP FALLBACK'}[final_transport]
             job_set(job_id, message=f'اعمال Port Mapping روی {label}')
             applied = apply_plan(eid, port_plan)
+            _timing_add(kernel_timings, 'port_mapping', stage_started)
 
         if final_transport == 'framed-tls':
             done_message = f'{eid} TLS/TCP ONLINE · TCP {final_port} · {local_addr} ↔ {remote_addr}'
@@ -474,13 +549,22 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
             done_message = f'{eid} GRE/UDP FAST ONLINE · UDP {final_port} · {local_addr} ↔ {remote_addr}'
         else:
             done_message = f'{eid} GRE FAST ONLINE · {local_addr} ↔ {remote_addr}'
+        timing_payload = _kernel_timing_payload(kernel_started, kernel_timings)
         job_set(job_id, state='done', message=done_message,
-                result={**rec, 'mappings': applied, 'remote': final_remote_result})
+                result={**rec, 'mappings': applied, 'remote': final_remote_result,
+                        'kernel_timing_v3': timing_payload})
     except Exception as exc:
         if eid:
+            stage_started = time.monotonic()
             _cleanup_local(eid)
             try:
                 await _cleanup_remote(agent_id, eid)
             except Exception:
                 pass
-        job_set(job_id, state='failed', message='خطا: ' + str(exc))
+            _timing_add(kernel_timings, 'failure_cleanup', stage_started)
+        job_set(
+            job_id,
+            state='failed',
+            message='خطا: ' + str(exc),
+            result={'kernel_timing_v3': _kernel_timing_payload(kernel_started, kernel_timings)},
+        )
