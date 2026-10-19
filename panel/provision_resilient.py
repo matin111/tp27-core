@@ -13,6 +13,8 @@ from provision import CORE_CONFIG, EXITS, atomic_json, iface_for, job_set, load_
 MIN_AGENT_VERSION = (1, 6, 0)
 AGENT_UPGRADE_TARGET = '1.6.0'
 AGENT_RECONNECT_POLL = 1.0
+AGENT_UPGRADE_COMMAND_TIMEOUT = 90
+AGENT_UPGRADE_RECONNECT_TIMEOUT = 90
 GRE_POOL = ipaddress.ip_network('10.253.0.0/16')
 DEFAULT_MTU = 1400
 TLS_MTU = 1300
@@ -118,18 +120,32 @@ async def _ensure_agent(agent_id, job_id):
         return agent
 
     job_set(job_id, message=f"ارتقای خودکار Agent از v{agent.get('version','?')} به v{AGENT_UPGRADE_TARGET}")
+    command = queue_command(agent_id, 'upgrade_agent', {})
+    result = None
     try:
-        command = queue_command(agent_id, 'upgrade_agent', {})
-        result = await wait_command(command['id'], timeout=90)
+        result = await wait_command(command['id'], timeout=AGENT_UPGRADE_COMMAND_TIMEOUT)
+    except TimeoutError:
+        # Legacy v1.5.x agents may spend more than 90 seconds downloading the
+        # new runner/runtime before they can post the command result. A command
+        # timeout is therefore not proof of upgrade failure. Keep observing the
+        # authenticated heartbeat and accept only the required version.
+        job_set(
+            job_id,
+            message=(
+                f'فرمان ارتقای Agent هنوز در حال اجراست؛ انتظار برای بازگشت '
+                f'v{AGENT_UPGRADE_TARGET}'
+            ),
+        )
     except Exception as exc:
         raise RuntimeError(
             'Agent قدیمی است و ارتقای خودکار انجام نشد. یک بار Installer جدید Agent را روی سرور خارج اجرا کنید. '
             + str(exc)
         )
-    if result.get('state') != 'done' or not result.get('ok'):
+
+    if result is not None and (result.get('state') != 'done' or not result.get('ok')):
         raise RuntimeError(result.get('error') or 'ارتقای Agent ناموفق بود')
 
-    deadline = time.monotonic() + 70
+    deadline = time.monotonic() + AGENT_UPGRADE_RECONNECT_TIMEOUT
     while time.monotonic() < deadline:
         await asyncio.sleep(AGENT_RECONNECT_POLL)
         agent = get_agent(agent_id)
