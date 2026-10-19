@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+STATE_DIR=/var/lib/tp27-panel-updater
+STATE_FILE="$STATE_DIR/state.json"
+BACKUP_ROOT=/var/backups/tp27-panel
+VERSION_FILE=/etc/tp27/panel-version
+LOCK_FILE=/run/tp27-panel-update.lock
+REPO_RAW=https://raw.githubusercontent.com/matin111/tp27-core
+
+mkdir -p "$STATE_DIR" "$BACKUP_ROOT"
+chmod 700 "$STATE_DIR" "$BACKUP_ROOT"
+
+write_state() {
+  local state="$1" message="$2" job_id="$3" target="${4:-}" backup="${5:-}" rollback="${6:-false}"
+  python3 - "$STATE_FILE" "$state" "$message" "$job_id" "$target" "$backup" "$rollback" <<'PY'
+import json, os, sys, time
+from pathlib import Path
+p=Path(sys.argv[1])
+obj={
+    'state':sys.argv[2],
+    'message':sys.argv[3],
+    'job_id':sys.argv[4],
+    'target':sys.argv[5] or None,
+    'backup':sys.argv[6] or None,
+    'rollback':sys.argv[7].lower()=='true',
+    'updated_at':int(time.time()),
+}
+try:
+    old=json.loads(p.read_text())
+except Exception:
+    old={}
+for k in ('current','started_at','unit'):
+    if k in old:
+        obj[k]=old[k]
+if obj['state'] in {'done','failed','rolled_back'}:
+    obj['finished_at']=int(time.time())
+else:
+    obj['finished_at']=old.get('finished_at')
+tmp=p.with_suffix('.tmp')
+tmp.write_text(json.dumps(obj,ensure_ascii=False,indent=2)+'\n')
+os.chmod(tmp,0o600)
+os.replace(tmp,p)
+PY
+}
+
+current_version() {
+  local v=""
+  [[ -f "$VERSION_FILE" ]] && v="$(tr -d '[:space:]' < "$VERSION_FILE" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$v" =~ ^[0-9a-f]{40}$ ]]; then printf '%s\n' "$v"; else printf 'unknown\n'; fi
+}
+
+verify_panel() {
+  systemctl is-active --quiet tp27-panel.service || return 1
+  for _ in $(seq 1 20); do
+    if curl -kfsS --connect-timeout 2 --max-time 4 https://127.0.0.1:8787/login >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+restore_backup() {
+  local backup="$1"
+  [[ -f "$backup/system.tar.gz" ]] || return 1
+  tar -xzf "$backup/system.tar.gz" -C / || return 1
+  if [[ -f "$backup/version.before" ]]; then
+    cp -a "$backup/version.before" "$VERSION_FILE"
+  else
+    rm -f "$VERSION_FILE"
+  fi
+  systemctl daemon-reload
+  systemctl restart tp27-panel.service || true
+  systemctl restart tp27-ports-reconcile.service 2>/dev/null || true
+  systemctl restart tp27-plain-control.service 2>/dev/null || true
+  systemctl restart tp27-benchmark.service 2>/dev/null || true
+  verify_panel
+}
+
+fail_with_rollback() {
+  local message="$1" job_id="$2" target="$3" backup_name="$4" backup="$5"
+  write_state rolling_back "$message؛ Rollback خودکار شروع شد" "$job_id" "$target" "$backup_name" true
+  if restore_backup "$backup"; then
+    write_state failed "$message؛ نسخه قبلی با موفقیت بازگردانده شد" "$job_id" "$target" "$backup_name" true
+  else
+    write_state failed "$message؛ Rollback نیز ناموفق بود و بررسی دستی لازم است" "$job_id" "$target" "$backup_name" true
+  fi
+  exit 1
+}
+
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "ERROR: another panel update is running" >&2
+  exit 75
+fi
+
+if [[ "${1:-}" == "--rollback" ]]; then
+  BACKUP_NAME="${2:-}"
+  JOB_ID="${3:-rollback}"
+  [[ "$BACKUP_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || { write_state failed 'نام Backup نامعتبر است' "$JOB_ID" '' "$BACKUP_NAME" true; exit 2; }
+  BACKUP="$BACKUP_ROOT/$BACKUP_NAME"
+  write_state rolling_back 'در حال بازگردانی نسخه قبلی' "$JOB_ID" '' "$BACKUP_NAME" true
+  if restore_backup "$BACKUP"; then
+    write_state rolled_back 'Rollback با موفقیت انجام شد' "$JOB_ID" "$(current_version)" "$BACKUP_NAME" true
+    exit 0
+  fi
+  write_state failed 'Rollback ناموفق بود؛ وضعیت سرویس را بررسی کنید' "$JOB_ID" '' "$BACKUP_NAME" true
+  exit 1
+fi
+
+TARGET="${1:-}"
+JOB_ID="${2:-update}"
+[[ "$TARGET" =~ ^[0-9a-f]{40}$ ]] || { write_state failed 'SHA هدف نامعتبر است' "$JOB_ID" "$TARGET" '' false; exit 2; }
+
+CURRENT="$(current_version)"
+STAMP="$(date -u +%Y%m%d-%H%M%S)"
+BACKUP_NAME="${STAMP}-${CURRENT:0:12}"
+BACKUP="$BACKUP_ROOT/$BACKUP_NAME"
+
+mkdir -p "$BACKUP"
+chmod 700 "$BACKUP"
+printf '%s\n' "$CURRENT" > "$BACKUP/version.before"
+chmod 600 "$BACKUP/version.before"
+
+write_state backup 'در حال تهیه Backup تراکنشی' "$JOB_ID" "$TARGET" "$BACKUP_NAME" false
+
+# Backup only files the managed installer may replace. Runtime state such as
+# config.json, port mappings and Agent secrets is intentionally not restored.
+set +e
+tar -C / -czf "$BACKUP/system.tar.gz" \
+  --exclude='opt/tp27-panel/venv' \
+  opt/tp27-panel \
+  etc/systemd/system/tp27-panel.service \
+  etc/systemd/system/tp27-ports-reconcile.service \
+  etc/systemd/system/tp27-plain-control.service \
+  etc/systemd/system/tp27-benchmark.service \
+  usr/local/lib/tp27
+TAR_RC=$?
+set -e
+if [[ "$TAR_RC" -ne 0 ]]; then
+  write_state failed 'ساخت Backup ناموفق بود؛ هیچ تغییری اعمال نشد' "$JOB_ID" "$TARGET" "$BACKUP_NAME" false
+  exit 1
+fi
+
+ln -sfn "$BACKUP" "$BACKUP_ROOT/latest-successful"
+
+INSTALLER="$(mktemp /tmp/tp27-panel-update.XXXXXX.sh)"
+trap 'rm -f "$INSTALLER"' EXIT
+
+write_state downloading 'در حال دریافت نسخه جدید از GitHub' "$JOB_ID" "$TARGET" "$BACKUP_NAME" false
+set +e
+curl -fsSL --connect-timeout 10 --max-time 90 \
+  "$REPO_RAW/$TARGET/install-panel-managed.sh" -o "$INSTALLER"
+CURL_RC=$?
+set -e
+if [[ "$CURL_RC" -ne 0 ]]; then
+  write_state failed 'دریافت نسخه جدید ناموفق بود؛ هیچ فایل فعالی تغییر نکرد' "$JOB_ID" "$TARGET" "$BACKUP_NAME" false
+  exit 1
+fi
+chmod 700 "$INSTALLER"
+
+write_state installing 'در حال نصب نسخه جدید؛ Tunnelهای فعال Restart نمی‌شوند' "$JOB_ID" "$TARGET" "$BACKUP_NAME" false
+set +e
+TP27_REPO_RAW="$REPO_RAW/$TARGET" \
+TP27_INSTALL_COMMIT="$TARGET" \
+bash "$INSTALLER"
+RC=$?
+set -e
+
+if [[ "$RC" -eq 0 ]] && verify_panel; then
+  printf '%s\n' "$TARGET" > "$VERSION_FILE"
+  chmod 600 "$VERSION_FILE"
+  write_state done 'بروزرسانی با موفقیت انجام شد' "$JOB_ID" "$TARGET" "$BACKUP_NAME" false
+  mapfile -t OLD < <(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -nr | awk 'NR>5{$1=""; sub(/^ /,""); print}')
+  for p in "${OLD[@]:-}"; do [[ -n "$p" ]] && rm -rf -- "$p"; done
+  exit 0
+fi
+
+fail_with_rollback 'نصب یا Health Check نسخه جدید ناموفق بود' "$JOB_ID" "$TARGET" "$BACKUP_NAME" "$BACKUP"
