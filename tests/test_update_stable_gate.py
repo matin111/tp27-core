@@ -24,6 +24,17 @@ def test_post_update_smoke_checks_ui_api_and_data_planes():
     assert 'Post-Update Smoke Test' in text
 
 
+def test_managed_installer_has_bootstrap_smoke_gate():
+    text = (ROOT / 'install-panel-managed.sh').read_text(encoding='utf-8')
+    assert 'DATA_PLANES_BEFORE=' in text
+    assert 'INSTALL_SMOKE=OK' in text
+    assert "get('/api/status',auth=True)" in text
+    assert "get('/api/agents',auth=True)" in text
+    assert 'node --check' in text
+    assert 'data plane stopped during panel update' in text
+    assert 'DATA_PLANES=verified-untouched' in text
+
+
 def test_update_ui_exposes_stable_and_verifying_state():
     text = (ROOT / 'panel/static/self-update.js').read_text(encoding='utf-8')
     assert 'updChannel' in text
