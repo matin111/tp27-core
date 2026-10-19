@@ -19,13 +19,13 @@ class KernelTimingV3Tests(unittest.TestCase):
             'agent_ready',
             'context_prepare',
             'pre_cleanup',
-            'raw_gre.local_start',
-            'raw_gre.remote_provision',
-            'raw_gre.health_gate',
-            'raw_gre.candidate_total',
             'commit_config',
         ):
             self.assertIn(stage, text)
+        self.assertIn("f'{prefix}.local_start'", text)
+        self.assertIn("f'{prefix}.remote_provision'", text)
+        self.assertIn("f'{prefix}.health_gate'", text)
+        self.assertIn("'raw_gre.candidate_total'", text)
 
     def test_build_gre_records_substages_without_relaxing_health(self):
         timings = []
