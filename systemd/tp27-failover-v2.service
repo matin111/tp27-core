@@ -1,0 +1,17 @@
+[Unit]
+Description=TP27 Health Engine V2 / Make-Before-Break Failover
+After=network-online.target tp27-panel.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/tp27-panel
+Environment=PYTHONUNBUFFERED=1
+Environment=TP27_FAILOVER_CONFIG=/etc/tp27/failover-v2.json
+Environment=TP27_FAILOVER_STATE=/var/lib/tp27/failover-v2-state.json
+ExecStart=/opt/tp27-panel/venv/bin/python /opt/tp27-panel/failover_v2.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
