@@ -121,6 +121,7 @@ document.head.appendChild(style);
 document.documentElement.classList.add('tp27-ui-stabilizing');
 
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const htmlEsc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 function serviceRank(name){
   const key=String(name||'').trim().toLowerCase();
@@ -159,6 +160,197 @@ function normalizePortBadges(root=document){
       box.appendChild(badge);
     }
   });
+}
+
+/*
+ * V9 zero-shift refresh contract:
+ * - heartbeat/state objects are always replaced with fresh API data;
+ * - visible lists are rebuilt only when a field rendered on screen changed;
+ * - volatile heartbeat fields such as last_seen never rebuild inventory cards;
+ * - transient GET errors keep the last healthy DOM instead of replacing it.
+ */
+function tunnelVisualSignature(status){
+  const rows=(status&&Array.isArray(status.exits)?status.exits:[]).map(x=>({
+    id:String(x.id||''),
+    healthy:!!x.healthy,
+    degraded:!!x.degraded,
+    endpoint:String(x.endpoint||''),
+    port:Number(x.port||0),
+    interface:String(x.interface||''),
+    remote_ip:String(x.remote_ip||''),
+    transport:String(x.transport||''),
+    mode:String(x.mode||''),
+    mappings:(x.mappings||[]).map(m=>({
+      service:String(m.service||''),
+      proto:String(m.proto||'').toLowerCase(),
+      listen_port:Number(m.listen_port||0),
+      target_port:Number(m.target_port||0)
+    }))
+  }));
+  return JSON.stringify(rows);
+}
+
+function agentVisualSignature(list){
+  return JSON.stringify((list||[]).map(a=>({
+    agent_id:String(a.agent_id||''),
+    hostname:String(a.hostname||''),
+    public_ip:String(a.public_ip||''),
+    online:!!a.online,
+    version:String(a.version||''),
+    tunnel_count:Number(a.tunnel_count||0)
+  })));
+}
+
+function agentOptionsSignature(list){
+  return JSON.stringify((list||[]).map(a=>[
+    String(a.agent_id||''),
+    String(a.hostname||''),
+    String(a.public_ip||''),
+    !!a.online
+  ]));
+}
+
+function mappingsHtml(items=[]){
+  if(!items.length)return '';
+  return '<div class="badges">'+items.map(m=>`<span class="badge"><b>${htmlEsc(m.service)}</b> ${htmlEsc(String(m.proto).toUpperCase())} ${htmlEsc(m.listen_port)}→${htmlEsc(m.target_port)}</span>`).join('')+'</div>';
+}
+
+function seedVisualSignature(listId,signature,count,selector){
+  const list=document.getElementById(listId);
+  if(!list||list.dataset.tp27VisualSignature)return;
+  if(list.querySelectorAll(selector).length===count)list.dataset.tp27VisualSignature=signature;
+}
+
+function updateAgentSelectSilently(list){
+  const sel=document.getElementById('agentId');
+  if(!sel)return;
+  const signature=agentOptionsSignature(list);
+  if(sel.dataset.tp27OptionsSignature===signature)return;
+  const current=sel.value;
+  sel.innerHTML='<option value="">انتخاب سرور</option>'+list.map(a=>`<option value="${htmlEsc(a.agent_id)}" ${a.online?'':'disabled'}>${htmlEsc(a.hostname||a.agent_id)} · ${htmlEsc(a.public_ip||'-')}${a.online?'':' · آفلاین'}</option>`).join('');
+  if([...sel.options].some(o=>o.value===current&&!o.disabled))sel.value=current;
+  sel.dataset.tp27OptionsSignature=signature;
+}
+
+function renderTunnelInventory(status,signature){
+  const list=document.getElementById('exitList');
+  if(!list)return;
+  const rows=status.exits||[];
+  list.innerHTML=rows.length?rows.map(x=>`
+    <div class="exit tunnel-card" data-exit-id="${htmlEsc(x.id)}">
+      <div class="exit-main">
+        <div><span class="dot ${x.healthy?'good':'bad'}"></span><b>${htmlEsc(x.id)}</b></div>
+        <div class="muted">${htmlEsc(x.endpoint)}:${htmlEsc(x.port)} · ${htmlEsc(x.interface)} · ${htmlEsc(x.remote_ip)}</div>
+        ${mappingsHtml(x.mappings)}
+      </div>
+      <div class="actions tunnel-actions">
+        <button class="btn small primary" type="button" onclick="openTunnelManage('${htmlEsc(x.id)}')">مدیریت</button>
+        <button class="btn small" type="button" onclick="diagnoseTunnel('${htmlEsc(x.id)}')">بررسی</button>
+        <button class="btn small" type="button" onclick="repairTunnel('${htmlEsc(x.id)}')">Restart</button>
+      </div>
+    </div>`).join(''):'<div class="muted">بدون تونل</div>';
+  list.dataset.tp27VisualSignature=signature;
+  list.dataset.tp27LastRender=String(Date.now());
+}
+
+function renderAgentInventory(listData,signature){
+  const list=document.getElementById('agentList');
+  if(!list)return;
+  list.innerHTML=listData.length?listData.map(a=>`
+    <div class="exit agent-card tunnel-card" data-agent-id="${htmlEsc(a.agent_id)}">
+      <div class="exit-main">
+        <div><span class="dot ${a.online?'good':'bad'}"></span><b>${htmlEsc(a.hostname||a.agent_id)}</b></div>
+        <div class="muted">${htmlEsc(a.public_ip||'-')} · ${a.online?'آنلاین':'آفلاین'} · v${htmlEsc(a.version||'-')} · ${Number(a.tunnel_count||0)} تونل</div>
+      </div>
+      <div class="actions tunnel-actions">
+        <button class="btn small primary" type="button" onclick="openAgentManage('${htmlEsc(a.agent_id)}')">مدیریت</button>
+      </div>
+    </div>`).join(''):'<div class="muted">بدون سرور خارج</div>';
+  list.dataset.tp27VisualSignature=signature;
+  list.dataset.tp27LastRender=String(Date.now());
+}
+
+async function silentV9LoadStatus(){
+  const list=document.getElementById('exitList');
+  const previous=(()=>{try{return currentStatus||{exits:[]}}catch(_){return{exits:[]}}})();
+  if(list){
+    const oldSignature=tunnelVisualSignature(previous);
+    seedVisualSignature('exitList',oldSignature,(previous.exits||[]).length,'.tunnel-card');
+  }
+  try{
+    const s=await api('/api/status');
+    currentStatus=s;
+    const publicIp=document.getElementById('publicIp');
+    const exitCount=document.getElementById('exitCount');
+    const onlineCount=document.getElementById('onlineCount');
+    if(publicIp)publicIp.textContent=s.public_ip||'-';
+    if(exitCount)exitCount.textContent=String((s.exits||[]).length);
+    if(onlineCount)onlineCount.textContent=String((s.exits||[]).filter(x=>x.healthy).length);
+    if(!list)return s;
+    const signature=tunnelVisualSignature(s);
+    const hasExpectedCards=list.querySelectorAll('.tunnel-card').length===(s.exits||[]).length;
+    if(list.dataset.tp27VisualSignature===signature&&hasExpectedCards){
+      list.dataset.tp27Refresh='silent';
+      list.dataset.tp27LastSync=String(Date.now());
+      return s;
+    }
+    renderTunnelInventory(s,signature);
+    normalizePortBadges(list);
+    return s;
+  }catch(e){
+    if(list){
+      list.dataset.tp27RefreshError=String(e&&e.message||e||'refresh failed');
+      if(list.querySelector('.tunnel-card'))return previous;
+      list.innerHTML='<div class="muted">'+htmlEsc(e&&e.message||'خطا')+'</div>';
+    }
+    return previous;
+  }
+}
+
+async function silentV9LoadAgents(){
+  const list=document.getElementById('agentList');
+  const previous=(()=>{try{return agents||[]}catch(_){return[]}})();
+  if(list){
+    const oldSignature=agentVisualSignature(previous);
+    seedVisualSignature('agentList',oldSignature,previous.length,'.agent-card');
+  }
+  try{
+    const data=await api('/api/agents');
+    const fresh=data.agents||[];
+    agents=fresh;
+    const count=document.getElementById('agentCount');
+    if(count)count.textContent=String(fresh.length);
+    updateAgentSelectSilently(fresh);
+    if(!list)return fresh;
+    const signature=agentVisualSignature(fresh);
+    const hasExpectedCards=list.querySelectorAll('.agent-card').length===fresh.length;
+    if(list.dataset.tp27VisualSignature===signature&&hasExpectedCards){
+      list.dataset.tp27Refresh='silent';
+      list.dataset.tp27LastSync=String(Date.now());
+      return fresh;
+    }
+    renderAgentInventory(fresh,signature);
+    return fresh;
+  }catch(e){
+    if(list){
+      list.dataset.tp27RefreshError=String(e&&e.message||e||'refresh failed');
+      if(list.querySelector('.agent-card'))return previous;
+      list.innerHTML='<div class="muted">'+htmlEsc(e&&e.message||'خطا')+'</div>';
+    }
+    return previous;
+  }
+}
+
+function installSilentV9DataHooks(){
+  if(!isV9())return;
+  if(typeof window.loadStatus==='function'&&!window.loadStatus.__tp27ZeroShift){
+    silentV9LoadStatus.__tp27ZeroShift=true;
+    window.loadStatus=silentV9LoadStatus;
+  }
+  if(typeof window.loadAgents==='function'&&!window.loadAgents.__tp27ZeroShift){
+    silentV9LoadAgents.__tp27ZeroShift=true;
+    window.loadAgents=silentV9LoadAgents;
+  }
 }
 
 function ensureV9SystemNav(){
@@ -288,6 +480,7 @@ async function waitForStableUi(maxMs){
 }
 
 function installLoadStatusHook(){
+  installSilentV9DataHooks();
   const base=window.loadStatus;
   if(typeof base!=='function'||base.__tp27PortStable)return;
   const wrapped=async function(){
@@ -296,10 +489,12 @@ function installLoadStatusHook(){
     return result;
   };
   wrapped.__tp27PortStable=true;
+  if(base.__tp27ZeroShift)wrapped.__tp27ZeroShift=true;
   window.loadStatus=wrapped;
 }
 
 function installRefreshHook(){
+  installSilentV9DataHooks();
   const base=window.refreshAll;
   if(typeof base!=='function'||base.__tp27UiStable)return;
   const wrapped=async function(){
@@ -324,6 +519,7 @@ function installRefreshHook(){
 
 async function releaseBoot(){
   ensureV9SystemNav();
+  installSilentV9DataHooks();
   installLoadStatusHook();
   installRefreshHook();
   await waitForStableUi(BOOT_MAX_MS);
@@ -340,6 +536,7 @@ if(document.readyState==='loading'){
 
 window.addEventListener('pageshow',()=>{
   ensureV9SystemNav();
+  installSilentV9DataHooks();
   installLoadStatusHook();
   installRefreshHook();
   normalizePortBadges();
