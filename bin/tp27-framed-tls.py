@@ -6,13 +6,15 @@ import hashlib
 import ipaddress
 import json
 import os
+import re
 import socket
 import ssl
 import struct
 import subprocess
 from pathlib import Path
 
-RUNTIME_VERSION = '1.1.1'
+RUNTIME_VERSION = '1.1.2'
+DEFAULT_TLS_SERVER_NAME = 'www.cloudflare.com'
 TUNSETIFF = 0x400454CA
 IFF_TUN = 0x0001
 IFF_NO_PI = 0x1000
@@ -26,6 +28,25 @@ def run_quiet(cmd):
 def run_capture(cmd):
     p = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
     return p.returncode, (p.stdout or '').strip(), (p.stderr or '').strip()
+
+
+def _tls_server_name(data):
+    value = str(data.get('tls_server_name') or DEFAULT_TLS_SERVER_NAME).strip().rstrip('.')
+    if not value:
+        raise RuntimeError('missing tls_server_name')
+    if len(value) > 253 or not re.fullmatch(
+        r'(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+'
+        r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?',
+        value,
+    ):
+        raise RuntimeError('invalid tls_server_name')
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        pass
+    else:
+        raise RuntimeError('tls_server_name must be a DNS hostname, not an IP address')
+    return value.lower()
 
 
 def load_config(path):
@@ -55,6 +76,8 @@ def load_config(path):
     data['mtu'] = mtu
     data['_local_ip'] = str(tunnel.ip)
     data['_peer_ip'] = str(peer)
+    if role == 'framed-client':
+        data['_tls_server_name'] = _tls_server_name(data)
     return data
 
 
@@ -253,6 +276,9 @@ async def client_main(cfg, tun_fd):
     remote = str(cfg.get('remote_public') or '').strip()
     if not remote:
         raise RuntimeError('missing remote_public')
+    server_name = str(cfg.get('_tls_server_name') or '').strip()
+    if not server_name:
+        raise RuntimeError('missing validated tls_server_name')
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.check_hostname = False
@@ -260,14 +286,20 @@ async def client_main(cfg, tun_fd):
 
     print(
         f"TP27_FRAMED_READY version={RUNTIME_VERSION} role=client iface={cfg['interface']} "
-        f"addr={cfg['tunnel_ip']} peer={cfg['peer_ip']} remote={remote}:{cfg['listen_port']}",
+        f"addr={cfg['tunnel_ip']} peer={cfg['peer_ip']} remote={remote}:{cfg['listen_port']} "
+        f"sni={server_name}",
         flush=True,
     )
     failures = 0
     while True:
         try:
             reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(remote, cfg['listen_port'], ssl=context, server_hostname=None),
+                asyncio.open_connection(
+                    remote,
+                    cfg['listen_port'],
+                    ssl=context,
+                    server_hostname=server_name,
+                ),
                 timeout=12,
             )
             ssl_obj = writer.get_extra_info('ssl_object')
@@ -281,7 +313,11 @@ async def client_main(cfg, tun_fd):
                 raise RuntimeError(f'certificate pin mismatch actual={actual}')
             tune_socket(writer)
             failures = 0
-            print(f'TP27_FRAMED_CONNECTED remote={remote}:{cfg["listen_port"]} pin={actual}', flush=True)
+            print(
+                f'TP27_FRAMED_CONNECTED remote={remote}:{cfg["listen_port"]} '
+                f'sni={server_name} pin={actual}',
+                flush=True,
+            )
             await pump(reader, writer, tun_fd)
         except Exception as exc:
             failures += 1
