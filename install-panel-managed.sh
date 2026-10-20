@@ -37,7 +37,7 @@ wait_for_apt
 apt-get install -y -qq curl ca-certificates iperf3 util-linux >/dev/null
 
 install -d -m 755 "$PANEL" "$STATIC" /usr/local/lib/tp27
-install -d -m 700 /etc/tp27 /var/lib/tp27-panel-updater /var/backups/tp27-panel /var/log/tp27/panel-jobs
+install -d -m 700 /etc/tp27 /var/lib/tp27 /var/lib/tp27-panel-updater /var/backups/tp27-panel /var/log/tp27/panel-jobs
 
 fetch() {
   local src="$1" dst="$2" tmp
@@ -72,7 +72,7 @@ echo "TARGET=${TARGET:-main}"
 fetch panel/requirements.txt "$PANEL/requirements.txt"
 "$PANEL/venv/bin/pip" install -r "$PANEL/requirements.txt" >/dev/null
 
-for f in app.py auth.py provision.py provision_password.py provision_agent.py agent_control.py ports.py portplan.py plain_control.py self_update.py safe_switch.py safe_switch_router.py; do
+for f in app.py auth.py provision.py provision_password.py provision_agent.py agent_control.py ports.py portplan.py plain_control.py self_update.py safe_switch.py safe_switch_router.py health_v2.py failover_v2.py; do
   fetch "panel/$f" "$PANEL/$f"
 done
 fetch panel/provision_resilient.py "$PANEL/provision_resilient.py"
@@ -105,6 +105,7 @@ PY
 fetch systemd/tp27-ports-reconcile.service /etc/systemd/system/tp27-ports-reconcile.service
 fetch systemd/tp27-plain-control.service /etc/systemd/system/tp27-plain-control.service
 fetch systemd/tp27-benchmark.service /etc/systemd/system/tp27-benchmark.service
+fetch systemd/tp27-failover-v2.service /etc/systemd/system/tp27-failover-v2.service
 fetch systemd/tp27-link@.service /etc/systemd/system/tp27-link@.service
 fetch systemd/tp27-framed@.service /etc/systemd/system/tp27-framed@.service
 
@@ -128,6 +129,19 @@ chmod 755 \
   /usr/local/lib/tp27/tp27-gost-install.sh
 chmod 600 "$PANEL"/*.py
 
+if [[ ! -f /etc/tp27/failover-v2.json ]]; then
+  cat >/etc/tp27/failover-v2.json <<'JSON'
+{
+  "enabled": false,
+  "interval_seconds": 5,
+  "failure_threshold": 4,
+  "cooldown_seconds": 300,
+  "tunnels": []
+}
+JSON
+  chmod 600 /etc/tp27/failover-v2.json
+fi
+
 python3 - "$PANEL/app.py" <<'PY'
 from pathlib import Path
 p=Path('/opt/tp27-panel/app.py')
@@ -148,6 +162,7 @@ PY
   "$PANEL/agent_control.py" "$PANEL/plain_control.py" \
   "$PANEL/ports.py" "$PANEL/portplan.py" "$PANEL/self_update.py" \
   "$PANEL/safe_switch.py" "$PANEL/safe_switch_router.py" \
+  "$PANEL/health_v2.py" "$PANEL/failover_v2.py" \
   /usr/local/lib/tp27/tp27-link-preflight \
   /usr/local/lib/tp27/tp27-framed-tls.py \
   /usr/local/lib/tp27/tp27-gost-core.py
@@ -170,11 +185,16 @@ systemctl daemon-reload
 systemctl enable tp27-panel.service >/dev/null 2>&1 || true
 systemctl enable tp27-ports-reconcile.service >/dev/null 2>&1 || true
 systemctl enable tp27-benchmark.service >/dev/null 2>&1 || true
+systemctl enable tp27-failover-v2.service >/dev/null 2>&1 || true
 
 # No tp27-link@ or tp27-framed@ service is restarted here.
 systemctl restart tp27-panel.service
 systemctl restart tp27-ports-reconcile.service || true
 systemctl restart tp27-benchmark.service || true
+# Failover V2 ships globally disabled. Starting/restarting this controller is
+# control-plane-only and cannot mutate tunnels until explicitly enabled or run
+# with --tunnel for an isolated test.
+systemctl restart tp27-failover-v2.service || true
 
 # Agent control reconnects automatically; a short control-plane restart does not touch data planes.
 if systemctl cat tp27-plain-control.service >/dev/null 2>&1; then
@@ -236,7 +256,10 @@ if not isinstance(status.get('exits'),list):
     raise RuntimeError('/api/status contract failed')
 if not isinstance(agents.get('agents'),list):
     raise RuntimeError('/api/agents contract failed')
-print(f"INSTALL_SMOKE=OK EXITS={len(status['exits'])} AGENTS={len(agents['agents'])}")
+failover=json.loads(Path('/etc/tp27/failover-v2.json').read_text(encoding='utf-8'))
+if failover.get('enabled') is not False:
+    raise RuntimeError('Failover V2 must default to disabled')
+print(f"INSTALL_SMOKE=OK EXITS={len(status['exits'])} AGENTS={len(agents['agents'])} FAILOVER_V2=disabled")
 PY
 
 while IFS= read -r unit; do
@@ -249,6 +272,8 @@ done <<<"$DATA_PLANES_BEFORE"
 
 echo "PANEL=active"
 echo "BENCHMARK=$(systemctl is-active tp27-benchmark.service 2>/dev/null || true)"
+echo "FAILOVER_V2=$(systemctl is-active tp27-failover-v2.service 2>/dev/null || true)"
+echo "FAILOVER_V2_ENABLED=$(python3 -c 'import json; print(str(bool(json.load(open("/etc/tp27/failover-v2.json")).get("enabled"))).lower())' 2>/dev/null || echo unknown)"
 echo "VERSION=$(cat /etc/tp27/panel-version 2>/dev/null || echo unknown)"
 echo "DATA_PLANES=verified-untouched"
 echo "===== TP27 MANAGED UPDATE COMPLETE ====="
