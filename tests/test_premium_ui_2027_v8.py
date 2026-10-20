@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 
 INDEX = Path('panel/static/index.html')
@@ -58,10 +59,13 @@ def test_dashboard_keeps_existing_behavior_contract_ids_and_scripts():
 
 def test_builder_keeps_direct_heading_for_existing_enhancer():
     html = INDEX.read_text(encoding='utf-8')
-    assert (
-        '<section class="card builder dashboard-section" data-section="builder">\n'
-        '      <h3>ساخت تونل</h3>'
-    ) in html
+    # The enhancer depends on `.builder > h3`, but the section is allowed to
+    # gain additional structural/data attributes as the shell evolves.
+    match = re.search(
+        r'<section\b[^>]*class="[^"]*\bbuilder\b[^"]*"[^>]*>\s*<h3>ساخت تونل</h3>',
+        html,
+    )
+    assert match is not None
 
 
 def test_builder_copy_matches_auto_transport_architecture():
