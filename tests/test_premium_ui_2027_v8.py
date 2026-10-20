@@ -3,6 +3,7 @@ from pathlib import Path
 
 INDEX = Path('panel/static/index.html')
 PREMIUM = Path('panel/static/premium.css')
+PREMIUM_UI = Path('panel/static/premium-ui.js')
 
 
 def test_dashboard_declares_first_paint_and_color_scheme_in_source():
@@ -55,9 +56,18 @@ def test_dashboard_keeps_existing_behavior_contract_ids_and_scripts():
         assert script in html
 
 
+def test_builder_keeps_direct_heading_for_existing_enhancer():
+    html = INDEX.read_text(encoding='utf-8')
+    assert (
+        '<section class="card builder dashboard-section" data-section="builder">\n'
+        '      <h3>ساخت تونل</h3>'
+    ) in html
+
+
 def test_builder_copy_matches_auto_transport_architecture():
     html = INDEX.read_text(encoding='utf-8')
-    assert 'AUTO Smart Builder' in html
+    js = PREMIUM_UI.read_text(encoding='utf-8')
+    assert 'AUTO Smart Builder' in js
     assert 'AUTO · Smart Transport Selection' in html
     assert 'Raw GRE' in html
     assert 'GRE/UDP FOU' in html
