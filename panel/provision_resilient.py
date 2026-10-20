@@ -10,8 +10,8 @@ from agent_control import get_agent, queue_command, wait_command
 from portplan import apply_plan, validate_plan
 from provision import CORE_CONFIG, EXITS, atomic_json, iface_for, job_set, load_json, run, validate_id
 
-MIN_AGENT_VERSION = (1, 6, 0)
-AGENT_UPGRADE_TARGET = '1.6.0'
+MIN_AGENT_VERSION = (1, 7, 0)
+AGENT_UPGRADE_TARGET = '1.7.0'
 AGENT_RECONNECT_POLL = 1.0
 AGENT_UPGRADE_COMMAND_TIMEOUT = 90
 AGENT_UPGRADE_RECONNECT_TIMEOUT = 90
