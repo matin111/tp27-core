@@ -8,125 +8,138 @@
   <link rel="stylesheet" href="/static/first-paint.css">
   <link rel="stylesheet" href="/static/style.css">
   <link rel="stylesheet" href="/static/premium.css">
+  <link rel="stylesheet" href="/static/v9.css">
 </head>
-<body>
-<div class="wrap dashboard-shell">
-  <header class="top dashboard-top">
-    <div class="top-brand">
-      <div class="logo">TP27 <b>Control</b></div>
-      <div class="top-copy">
-        <strong>مرکز کنترل تونل‌ها</strong>
-        <span class="muted">وضعیت، ساخت، نگهداری و ارتقای امن</span>
-      </div>
+<body data-v9-view="overview">
+<div class="v9-app-shell">
+  <aside class="v9-sidebar" aria-label="ناوبری اصلی">
+    <div class="v9-brand">
+      <div class="v9-brand-mark">27</div>
+      <div class="v9-brand-copy"><b>TP27 Control</b><span>Network Control Plane</span></div>
     </div>
-    <div class="actions top-actions">
-      <button class="btn" type="button" onclick="refreshAll()">بروزرسانی</button>
-      <a class="btn link" href="/logout">خروج</a>
+
+    <nav class="v9-nav">
+      <button class="v9-nav-item active" type="button" data-v9-target="overview"><span class="v9-nav-icon">⌂</span><span>نمای کلی</span></button>
+      <button class="v9-nav-item" type="button" data-v9-target="servers"><span class="v9-nav-icon">▣</span><span>سرورهای خارج</span></button>
+      <button class="v9-nav-item" type="button" data-v9-target="tunnels"><span class="v9-nav-icon">⇄</span><span>تونل‌ها</span></button>
+      <button class="v9-nav-item" type="button" data-v9-target="builder"><span class="v9-nav-icon">＋</span><span>ساخت تونل</span></button>
+      <button class="v9-nav-item" type="button" data-v9-target="maintenance"><span class="v9-nav-icon">⌁</span><span>سلامت و نگهداری</span></button>
+    </nav>
+
+    <div class="v9-sidebar-health">
+      <span class="dot good"></span>
+      <div><b><span id="v9SideOnline">0</span> تونل سالم</b><small><span id="v9SideAgents">0</span> Agent ثبت‌شده</small></div>
     </div>
-  </header>
 
-  <section class="stats dashboard-kpis" aria-label="خلاصه وضعیت">
-    <article class="card kpi-card" data-kpi="iran"><span class="muted">IP ایران</span><strong id="publicIp">-</strong><small>Control Plane</small></article>
-    <article class="card kpi-card" data-kpi="agents"><span class="muted">سرورهای خارج</span><strong id="agentCount">0</strong><small>Agent ثبت‌شده</small></article>
-    <article class="card kpi-card" data-kpi="tunnels"><span class="muted">تونل‌ها</span><strong id="exitCount">0</strong><small>مسیر مدیریت‌شده</small></article>
-    <article class="card kpi-card" data-kpi="online"><span class="muted">آنلاین</span><strong id="onlineCount">0</strong><small>Health Gate سالم</small></article>
-  </section>
-
-  <main class="main dashboard-main">
-    <section class="card dashboard-section" data-section="agents">
-      <div class="section-title">
-        <div class="section-heading">
-          <h3>سرورهای خارج</h3>
-          <p>Agentها، نسخه، سلامت و عملیات مدیریتی</p>
-        </div>
-        <button class="btn small primary" type="button" onclick="openServerWizard()">+ افزودن سرور خارج</button>
-      </div>
-      <div id="agentList"><div class="muted loading-state">در حال دریافت سرورها...</div></div>
-    </section>
-
-    <section class="card dashboard-section" data-section="tunnels">
-      <div class="section-title">
-        <div class="section-heading">
-          <h3>تونل‌ها</h3>
-          <p>مسیر فعال، Transport، Ping و Port Mapping</p>
-        </div>
-      </div>
-      <div id="exitList"><div class="muted loading-state">در حال دریافت تونل‌ها...</div></div>
-    </section>
-
-    <section class="card builder dashboard-section" data-section="builder">
-      <h3>ساخت تونل</h3>
-      <div class="form-grid tunnel-grid">
-        <label>سرور خارج<select id="agentId"><option value="">انتخاب سرور</option></select></label>
-        <label>شناسه<input id="exitId" placeholder="exit01" autocomplete="off"></label>
-        <label>حالت ساخت<input value="AUTO · Smart Transport Selection" disabled></label>
-        <input id="tunnelPort" type="hidden" value="">
-      </div>
-
-      <div class="transport-flow" aria-label="اولویت Transport">
-        <span>Raw GRE</span><i>←</i><span>GRE/UDP FOU</span><i>←</i><span>Framed TLS/TCP</span><i>←</i><span>Fallback</span>
-      </div>
-
-      <div class="ports-title">
-        <div>
-          <h4>پورت‌ها</h4>
-          <small class="muted">Mapping سرویس‌ها از ایران به سرور خارج</small>
-        </div>
-        <div class="actions">
-          <button class="btn small" type="button" onclick="standardPorts()">استاندارد</button>
-          <button class="btn small primary" type="button" onclick="addPortRow()">+ پورت</button>
-        </div>
-      </div>
-      <div class="port-head"><span>سرویس</span><span>نوع</span><span>پورت ایران</span><span>پورت خارج</span><span></span></div>
-      <div id="portRows"></div>
-
-      <div class="row buttons builder-actions">
-        <button class="btn" type="button" onclick="preflight()">بررسی سرور</button>
-        <button class="btn primary" type="button" onclick="addExit()">ساخت تونل</button>
-      </div>
-      <div id="job" class="job muted" aria-live="polite">آماده</div>
-    </section>
-  </main>
-</div>
-
-<div id="serverWizard" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="wizardTitle">
-  <div class="modal-card">
-    <div class="section-title modal-head"><h3 id="wizardTitle">افزودن سرور خارج</h3><button class="btn small" type="button" onclick="closeServerWizard()" aria-label="بستن">×</button></div>
-    <div id="wizardWaiting">
-      <div class="wizard-status"><span id="wizardDot" class="dot bad"></span><strong id="wizardStatus">در حال آماده‌سازی...</strong></div>
-      <div class="command-box"><code id="installCommand"></code></div>
-      <div class="actions wizard-actions"><button class="btn primary" type="button" onclick="copyInstallCommand()">کپی دستور نصب</button><button class="btn" type="button" onclick="checkEnrollmentNow()">بررسی اتصال</button></div>
+    <div class="v9-sidebar-footer">
+      <button id="v9ThemeBtn" class="v9-icon-btn" type="button" aria-label="تغییر پوسته">◐</button>
+      <a class="v9-sidebar-logout" href="/logout">خروج</a>
     </div>
-    <div id="wizardReady" class="hidden"><div class="success-box"><span class="dot good"></span><strong id="readyAgentName">سرور متصل شد</strong><div id="readyAgentMeta" class="muted"></div></div><button class="btn primary full" type="button" onclick="useReadyAgent()">ساخت تونل برای این سرور</button></div>
+  </aside>
+
+  <div class="v9-workspace">
+    <header class="v9-topbar">
+      <div class="v9-page-heading">
+        <span class="v9-eyebrow">TP27 / Control</span>
+        <h1 id="v9PageTitle">نمای کلی شبکه</h1>
+        <p id="v9PageSub">وضعیت زنده Control Plane، Agentها و مسیرهای فعال</p>
+      </div>
+      <div class="v9-top-actions">
+        <div class="v9-live-chip"><span class="dot good"></span><span>Live</span></div>
+        <button class="btn" type="button" onclick="refreshAll()">تازه‌سازی</button>
+        <button class="btn primary" type="button" data-v9-goto="builder">+ تونل جدید</button>
+      </div>
+    </header>
+
+    <div class="wrap dashboard-shell v9-dashboard-shell">
+      <section class="stats dashboard-kpis v9-kpis" aria-label="خلاصه وضعیت">
+        <article class="card kpi-card v9-kpi" data-kpi="iran"><span class="v9-kpi-label">Control Plane</span><strong id="publicIp">-</strong><small>IP ایران</small></article>
+        <article class="card kpi-card v9-kpi" data-kpi="agents"><span class="v9-kpi-label">Agentها</span><strong id="agentCount">0</strong><small>سرور خارج</small></article>
+        <article class="card kpi-card v9-kpi" data-kpi="tunnels"><span class="v9-kpi-label">Tunnel</span><strong id="exitCount">0</strong><small>مسیر مدیریت‌شده</small></article>
+        <article class="card kpi-card v9-kpi" data-kpi="online"><span class="v9-kpi-label">Health Gate</span><strong id="onlineCount">0</strong><small>مسیر سالم</small></article>
+      </section>
+
+      <main class="main dashboard-main v9-main">
+        <section class="card v9-overview-section" data-v9-view-panel="overview">
+          <div class="v9-overview-grid">
+            <div class="v9-network-hero">
+              <div class="v9-orb"><span id="v9HealthPercent">100%</span></div>
+              <div class="v9-network-copy">
+                <span class="v9-eyebrow">NETWORK HEALTH</span>
+                <h2 id="v9HealthTitle">در حال بررسی شبکه...</h2>
+                <p id="v9HealthSub">اطلاعات زنده پس از همگام‌سازی نمایش داده می‌شود.</p>
+                <div class="v9-hero-actions">
+                  <button class="btn primary" type="button" data-v9-goto="tunnels">مشاهده تونل‌ها</button>
+                  <button class="btn" type="button" data-v9-goto="servers">مدیریت سرورها</button>
+                </div>
+              </div>
+            </div>
+            <div class="v9-quick-panel">
+              <div class="v9-panel-head"><div><span class="v9-eyebrow">QUICK ACTIONS</span><h3>عملیات سریع</h3></div></div>
+              <div class="v9-quick-actions">
+                <button type="button" data-v9-goto="builder"><b>＋</b><span>ساخت تونل جدید</span><small>AUTO Smart Builder</small></button>
+                <button type="button" onclick="window.openFleetDoctor&&openFleetDoctor()"><b>✦</b><span>Doctor سراسری</span><small>بررسی همه مسیرها</small></button>
+                <button type="button" onclick="document.getElementById('premiumHealthCenterBtn')?.click()"><b>♥</b><span>مرکز سلامت</span><small>رویدادها و هشدارها</small></button>
+                <button type="button" onclick="refreshAll()"><b>↻</b><span>تازه‌سازی</span><small>دریافت وضعیت جدید</small></button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card dashboard-section v9-view-section" data-section="agents" data-v9-view-panel="servers">
+          <div class="section-title v9-section-head">
+            <div class="section-heading"><span class="v9-eyebrow">EXIT NODES</span><h3>سرورهای خارج</h3><p>Agentها، نسخه، سلامت، سرعت و عملیات مدیریتی</p></div>
+            <button class="btn small primary" type="button" onclick="openServerWizard()">+ افزودن سرور خارج</button>
+          </div>
+          <div id="agentList"><div class="muted loading-state">در حال دریافت سرورها...</div></div>
+        </section>
+
+        <section class="card dashboard-section v9-view-section" data-section="tunnels" data-v9-view-panel="tunnels">
+          <div class="section-title v9-section-head">
+            <div class="section-heading"><span class="v9-eyebrow">DATA PLANE</span><h3>تونل‌ها</h3><p>Transport، Ping، Mapping، Health و عملیات مسیر</p></div>
+            <button class="btn small primary" type="button" data-v9-goto="builder">+ ساخت تونل</button>
+          </div>
+          <div id="exitList"><div class="muted loading-state">در حال دریافت تونل‌ها...</div></div>
+        </section>
+
+        <section class="card builder dashboard-section v9-view-section" data-section="builder" data-v9-view-panel="builder">
+          <h3>ساخت تونل</h3>
+          <div class="v9-builder-intro"><span class="v9-eyebrow">SMART PROVISION</span><strong>AUTO Builder</strong><p>سرور را انتخاب کن؛ TP27 مسیرهای موجود را بررسی می‌کند و سریع‌ترین Transport سالم را با Health Gate فعال می‌کند.</p></div>
+          <div class="form-grid tunnel-grid">
+            <label>سرور خارج<select id="agentId"><option value="">انتخاب سرور</option></select></label>
+            <label>شناسه<input id="exitId" placeholder="exit01" autocomplete="off"></label>
+            <label>حالت ساخت<input value="AUTO · Smart Transport Selection" disabled></label>
+            <input id="tunnelPort" type="hidden" value="">
+          </div>
+          <div class="transport-flow v9-transport-flow" aria-label="اولویت Transport"><span>Raw GRE</span><i>←</i><span>GRE/UDP FOU</span><i>←</i><span>Framed TLS/TCP</span><i>←</i><span>Fallback</span></div>
+          <div class="ports-title"><div><h4>Port Mapping</h4><small class="muted">سرویس‌های ایران به سرور خارج</small></div><div class="actions"><button class="btn small" type="button" onclick="standardPorts()">پورت‌های استاندارد</button><button class="btn small primary" type="button" onclick="addPortRow()">+ پورت</button></div></div>
+          <div class="port-head"><span>سرویس</span><span>نوع</span><span>پورت ایران</span><span>پورت خارج</span><span></span></div>
+          <div id="portRows"></div>
+          <div class="row buttons builder-actions"><button class="btn" type="button" onclick="preflight()">بررسی سرور</button><button class="btn primary" type="button" onclick="addExit()">ساخت تونل</button></div>
+          <div id="job" class="job muted" aria-live="polite">آماده</div>
+        </section>
+
+        <section class="card dashboard-section v9-view-section v9-maintenance" data-v9-view-panel="maintenance">
+          <div class="section-title v9-section-head"><div class="section-heading"><span class="v9-eyebrow">OPERATIONS</span><h3>سلامت و نگهداری</h3><p>ابزارهای کنترل، تشخیص، Benchmark و Update در یک Workspace مجزا</p></div></div>
+          <div class="v9-maintenance-grid">
+            <button type="button" onclick="window.openFleetDoctor&&openFleetDoctor()"><span>✦</span><b>Doctor سراسری</b><small>Health Check و تشخیص مسیرها</small></button>
+            <button type="button" onclick="document.getElementById('premiumHealthCenterBtn')?.click()"><span>♥</span><b>مرکز سلامت</b><small>رویدادها و وضعیت Auto-Heal</small></button>
+            <button type="button" onclick="document.getElementById('premiumAutoHealBtn')?.click()"><span>⟳</span><b>خودترمیم</b><small>کنترل Auto-Heal پنل</small></button>
+            <button type="button" onclick="document.getElementById('premiumRefreshBtn')?.click()"><span>↻</span><b>تازه‌سازی کامل</b><small>همگام‌سازی وضعیت پنل</small></button>
+          </div>
+          <div class="v9-maintenance-note"><span class="dot good"></span><div><b>Data Plane مستقل از UI است</b><p>عملیات ظاهری این Workspace سرویس‌های فعال tp27-link و tp27-framed را Restart نمی‌کند.</p></div></div>
+        </section>
+      </main>
+    </div>
   </div>
 </div>
 
-<div id="agentManage" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="agentManageTitle">
-  <div class="modal-card manage-card">
-    <div class="section-title modal-head"><h3 id="agentManageTitle">مدیریت سرور خارج</h3><button class="btn small" type="button" onclick="closeAgentManage()" aria-label="بستن">×</button></div>
-    <div id="agentManageBody" class="diag-body"></div>
-    <div id="agentManageMessage" class="muted"></div>
-    <div class="manage-footer"><div class="actions"><button class="btn primary" type="button" onclick="checkManagedAgent()">بررسی وضعیت</button><button id="agentUpgradeBtn" class="btn" type="button" onclick="upgradeManagedAgent()">ارتقای Agent</button><button class="btn" type="button" onclick="useManagedAgentForTunnel()">ساخت تونل</button></div><button id="agentDeleteBtn" class="btn danger" type="button" onclick="openDeleteAgent()">حذف سرور</button></div>
-  </div>
-</div>
-
+<div id="serverWizard" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="wizardTitle"><div class="modal-card"><div class="section-title modal-head"><h3 id="wizardTitle">افزودن سرور خارج</h3><button class="btn small" type="button" onclick="closeServerWizard()" aria-label="بستن">×</button></div><div id="wizardWaiting"><div class="wizard-status"><span id="wizardDot" class="dot bad"></span><strong id="wizardStatus">در حال آماده‌سازی...</strong></div><div class="command-box"><code id="installCommand"></code></div><div class="actions wizard-actions"><button class="btn primary" type="button" onclick="copyInstallCommand()">کپی دستور نصب</button><button class="btn" type="button" onclick="checkEnrollmentNow()">بررسی اتصال</button></div></div><div id="wizardReady" class="hidden"><div class="success-box"><span class="dot good"></span><strong id="readyAgentName">سرور متصل شد</strong><div id="readyAgentMeta" class="muted"></div></div><button class="btn primary full" type="button" onclick="useReadyAgent()">ساخت تونل برای این سرور</button></div></div></div>
+<div id="agentManage" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="agentManageTitle"><div class="modal-card manage-card"><div class="section-title modal-head"><h3 id="agentManageTitle">مدیریت سرور خارج</h3><button class="btn small" type="button" onclick="closeAgentManage()" aria-label="بستن">×</button></div><div id="agentManageBody" class="diag-body"></div><div id="agentManageMessage" class="muted"></div><div class="manage-footer"><div class="actions"><button class="btn primary" type="button" onclick="checkManagedAgent()">بررسی وضعیت</button><button id="agentUpgradeBtn" class="btn" type="button" onclick="upgradeManagedAgent()">ارتقای Agent</button><button class="btn" type="button" onclick="useManagedAgentForTunnel()">ساخت تونل</button></div><button id="agentDeleteBtn" class="btn danger" type="button" onclick="openDeleteAgent()">حذف سرور</button></div></div></div>
 <div id="deleteAgentModal" class="modal hidden" role="dialog" aria-modal="true"><div class="modal-card confirm-card"><h3>حذف سرور خارج</h3><p id="deleteAgentText" class="muted"></p><div class="actions confirm-actions"><button id="deleteAgentConfirmBtn" class="btn danger" type="button" onclick="confirmDeleteAgent()">حذف سرور</button><button class="btn" type="button" onclick="closeDeleteAgent()">انصراف</button></div></div></div>
-
-<div id="tunnelManage" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="manageTitle">
-  <div class="modal-card manage-card">
-    <div class="section-title modal-head"><h3 id="manageTitle">مدیریت تونل</h3><button class="btn small" type="button" onclick="closeTunnelManage()" aria-label="بستن">×</button></div>
-    <div class="manage-summary"><div><span class="muted">وضعیت</span><strong id="manageHealth">-</strong></div><div><span class="muted">سرور خارج</span><strong id="manageEndpoint">-</strong></div><div><span class="muted">Transport</span><strong id="manageTunnelPort">GRE FAST</strong></div><div><span class="muted">Interface</span><strong id="manageInterface">-</strong></div></div>
-    <div class="ports-title"><h4>Port Mapping</h4><div class="actions"><button class="btn small" type="button" onclick="manageStandardPorts()">استاندارد</button><button class="btn small primary" type="button" onclick="addManagePortRow()">+ پورت</button></div></div>
-    <div class="port-head"><span>سرویس</span><span>نوع</span><span>پورت ایران</span><span>پورت خارج</span><span></span></div><div id="managePortRows"></div><div id="manageMessage" class="job muted">آماده</div>
-    <div class="manage-footer"><div class="actions"><button class="btn primary" type="button" onclick="saveManagedPorts()">ذخیره پورت‌ها</button><button class="btn" type="button" onclick="diagnoseManagedTunnel()">بررسی</button><button class="btn" type="button" onclick="repairManagedTunnel()">تعمیر / Restart</button><button id="upgradeFastBtn" class="btn primary" type="button" onclick="upgradeManagedTunnelFast()">بازسازی GRE FAST</button></div><button class="btn danger" type="button" onclick="openDeleteTunnel()">حذف تونل</button></div>
-  </div>
-</div>
-
+<div id="tunnelManage" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="manageTitle"><div class="modal-card manage-card"><div class="section-title modal-head"><h3 id="manageTitle">مدیریت تونل</h3><button class="btn small" type="button" onclick="closeTunnelManage()" aria-label="بستن">×</button></div><div class="manage-summary"><div><span class="muted">وضعیت</span><strong id="manageHealth">-</strong></div><div><span class="muted">سرور خارج</span><strong id="manageEndpoint">-</strong></div><div><span class="muted">Transport</span><strong id="manageTunnelPort">GRE FAST</strong></div><div><span class="muted">Interface</span><strong id="manageInterface">-</strong></div></div><div class="ports-title"><h4>Port Mapping</h4><div class="actions"><button class="btn small" type="button" onclick="manageStandardPorts()">استاندارد</button><button class="btn small primary" type="button" onclick="addManagePortRow()">+ پورت</button></div></div><div class="port-head"><span>سرویس</span><span>نوع</span><span>پورت ایران</span><span>پورت خارج</span><span></span></div><div id="managePortRows"></div><div id="manageMessage" class="job muted">آماده</div><div class="manage-footer"><div class="actions"><button class="btn primary" type="button" onclick="saveManagedPorts()">ذخیره پورت‌ها</button><button class="btn" type="button" onclick="diagnoseManagedTunnel()">بررسی</button><button class="btn" type="button" onclick="repairManagedTunnel()">تعمیر / Restart</button><button id="upgradeFastBtn" class="btn primary" type="button" onclick="upgradeManagedTunnelFast()">بازسازی GRE FAST</button></div><button class="btn danger" type="button" onclick="openDeleteTunnel()">حذف تونل</button></div></div></div>
 <div id="deleteTunnelModal" class="modal hidden" role="dialog" aria-modal="true"><div class="modal-card confirm-card"><h3>حذف تونل</h3><p id="deleteTunnelText" class="muted"></p><div class="actions confirm-actions"><button id="deleteTunnelBtn" class="btn danger" type="button" onclick="confirmDeleteTunnel()">حذف کامل</button><button class="btn" type="button" onclick="closeDeleteTunnel()">انصراف</button></div></div></div>
-
-<div id="tunnelDiag" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="diagTitle">
-  <div class="modal-card diag-card"><div class="section-title modal-head"><h3 id="diagTitle">بررسی تونل</h3><button class="btn small" type="button" onclick="closeTunnelDiag()" aria-label="بستن">×</button></div><div id="diagBody" class="diag-body"></div><div class="actions wizard-actions"><button id="repairBtn" class="btn primary" type="button" onclick="repairActiveTunnel()">تعمیر خودکار</button><button class="btn" type="button" onclick="closeTunnelDiag()">بستن</button></div></div>
-</div>
+<div id="tunnelDiag" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="diagTitle"><div class="modal-card diag-card"><div class="section-title modal-head"><h3 id="diagTitle">بررسی تونل</h3><button class="btn small" type="button" onclick="closeTunnelDiag()" aria-label="بستن">×</button></div><div id="diagBody" class="diag-body"></div><div class="actions wizard-actions"><button id="repairBtn" class="btn primary" type="button" onclick="repairActiveTunnel()">تعمیر خودکار</button><button class="btn" type="button" onclick="closeTunnelDiag()">بستن</button></div></div></div>
 
 <script src="/static/runtime-refresh-fix.js"></script>
 <script src="/static/app.js"></script>
@@ -140,5 +153,58 @@
 <script src="/static/safe-switch-ui.js"></script>
 <script src="/static/self-update.js"></script>
 <script src="/static/ui-stability.js"></script>
+<script>
+(()=>{
+  'use strict';
+  const KEY='tp27_v9_view';
+  const views={
+    overview:['نمای کلی شبکه','وضعیت زنده Control Plane، Agentها و مسیرهای فعال'],
+    servers:['سرورهای خارج','مدیریت Agentها، نسخه‌ها، سرعت و سلامت سرورها'],
+    tunnels:['تونل‌ها','مدیریت Data Plane، Transport، Ping و Port Mapping'],
+    builder:['ساخت تونل','AUTO Smart Builder برای ساخت سریع و Health-Gated'],
+    maintenance:['سلامت و نگهداری','Doctor، Health Center، Auto-Heal و ابزارهای عملیاتی']
+  };
+  const $=id=>document.getElementById(id);
+  function valid(v){return Object.prototype.hasOwnProperty.call(views,v)?v:'overview'}
+  function syncOverview(){
+    const agents=Number(($('agentCount')||{}).textContent||0)||0;
+    const exits=Number(($('exitCount')||{}).textContent||0)||0;
+    const online=Number(($('onlineCount')||{}).textContent||0)||0;
+    if($('v9SideAgents'))$('v9SideAgents').textContent=agents;
+    if($('v9SideOnline'))$('v9SideOnline').textContent=online;
+    const pct=exits?Math.round((online/exits)*100):100;
+    if($('v9HealthPercent'))$('v9HealthPercent').textContent=pct+'%';
+    if($('v9HealthTitle'))$('v9HealthTitle').textContent=exits&&online===exits?`${online} از ${exits} تونل آنلاین`:(exits?`${online} از ${exits} تونل سالم`:'بدون تونل ثبت‌شده');
+    if($('v9HealthSub'))$('v9HealthSub').textContent=exits&&online===exits?'تمام Health Gateها سالم هستند.':'برای جزئیات وارد بخش تونل‌ها یا مرکز سلامت شوید.';
+    document.documentElement.style.setProperty('--v9-health-angle',Math.max(0,Math.min(360,pct*3.6))+'deg');
+  }
+  function setView(raw,push=true){
+    const view=valid(raw);
+    document.body.dataset.v9View=view;
+    document.querySelectorAll('[data-v9-target]').forEach(b=>b.classList.toggle('active',b.dataset.v9Target===view));
+    const meta=views[view];
+    if($('v9PageTitle'))$('v9PageTitle').textContent=meta[0];
+    if($('v9PageSub'))$('v9PageSub').textContent=meta[1];
+    if(push)try{localStorage.setItem(KEY,view)}catch(_){ }
+    if(view==='builder'){
+      try{localStorage.setItem('tp27_builder_open','1')}catch(_){ }
+      requestAnimationFrame(()=>{const b=document.querySelector('.builder');if(b)b.classList.remove('builder-collapsed')});
+    }
+    window.scrollTo({top:0,behavior:'smooth'});
+  }
+  document.querySelectorAll('[data-v9-target],[data-v9-goto]').forEach(btn=>btn.addEventListener('click',()=>setView(btn.dataset.v9Target||btn.dataset.v9Goto)));
+  $('v9ThemeBtn')?.addEventListener('click',()=>{
+    const next=document.documentElement.dataset.theme==='light'?'dark':'light';
+    document.documentElement.dataset.theme=next;
+    try{localStorage.setItem('tp27_ui_theme',next)}catch(_){ }
+  });
+  const observer=new MutationObserver(syncOverview);
+  ['agentCount','exitCount','onlineCount'].forEach(id=>{const n=$(id);if(n)observer.observe(n,{childList:true,subtree:true,characterData:true})});
+  let initial='overview';try{initial=valid(localStorage.getItem(KEY)||'overview')}catch(_){ }
+  setView(initial,false);
+  syncOverview();
+  setTimeout(syncOverview,1200);
+})();
+</script>
 </body>
 </html>
