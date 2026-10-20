@@ -5,8 +5,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_builder_requires_low_latency_agent_generation():
     text = (ROOT / 'panel/provision_resilient.py').read_text(encoding='utf-8')
-    assert 'MIN_AGENT_VERSION = (1, 6, 0)' in text
-    assert "AGENT_UPGRADE_TARGET = '1.6.0'" in text
+    assert 'MIN_AGENT_VERSION = (1, 7, 0)' in text
+    assert "AGENT_UPGRADE_TARGET = '1.7.0'" in text
     assert 'AGENT_RECONNECT_POLL = 1.0' in text
 
 
