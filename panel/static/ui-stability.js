@@ -5,6 +5,8 @@ const BOOT_MAX_MS=2400;
 const REFRESH_MAX_MS=1900;
 let refreshPromise=null;
 
+const isV9=()=>!!(document.body&&document.body.hasAttribute('data-v9-view'));
+
 const style=document.createElement('style');
 style.id='tp27UiStabilityStyle';
 style.textContent=`
@@ -13,178 +15,106 @@ html.tp27-ui-stabilizing body.tp27-premium:before{content:'TP27 Control';positio
 .tp27-refresh-shadow{position:absolute!important;z-index:20!important;pointer-events:none!important;margin-top:0!important}
 .tp27-refresh-live-hidden{visibility:hidden!important}
 
-/* ============================================================
-   TP27 TUNNEL CARD 2027
-   Compact control-tile layout: identity -> mappings -> metrics -> actions.
-   ============================================================ */
-.tp27-premium #exitList{align-items:stretch}
-.tp27-premium .tunnel-card{
-  display:grid!important;
-  grid-template-columns:minmax(0,1fr)!important;
-  grid-template-rows:auto auto!important;
-  gap:0!important;
+/* V9 owns the final card geometry. Legacy runtime tiles must never override it. */
+body[data-v9-view] #agentList,
+body[data-v9-view] #exitList{
+  display:flex!important;
+  flex-direction:column!important;
+  grid-template-columns:none!important;
+  gap:10px!important;
+  align-items:stretch!important;
+}
+body[data-v9-view] #agentList>.agent-card,
+body[data-v9-view] #exitList>.tunnel-card{
+  width:100%!important;
+  min-width:0!important;
   min-height:0!important;
+  margin:0!important;
+  padding:15px 16px!important;
+  display:grid!important;
+  grid-template-columns:minmax(0,1fr) auto!important;
+  grid-template-rows:auto!important;
+  gap:16px!important;
+  align-items:center!important;
+  overflow:visible!important;
+  border-radius:16px!important;
+  border:1px solid var(--v9-line)!important;
+  background:var(--v9-panel-2)!important;
+  box-shadow:none!important;
+  transform:none!important;
+}
+body[data-v9-view] #agentList>.agent-card:before,
+body[data-v9-view] #exitList>.tunnel-card:before{display:none!important}
+body[data-v9-view] #agentList>.agent-card .exit-main,
+body[data-v9-view] #exitList>.tunnel-card .exit-main{
+  width:100%!important;
+  min-width:0!important;
   padding:0!important;
-  overflow:hidden!important;
-  position:relative!important;
-  border-radius:18px!important;
-  background:linear-gradient(180deg,color-mix(in srgb,var(--p-surface-2) 98%,transparent),color-mix(in srgb,var(--p-surface) 96%,transparent))!important;
-}
-.tp27-premium .tunnel-card:before{
-  content:'';
-  position:absolute;
-  inset:0 0 auto 0;
-  height:2px;
-  background:linear-gradient(90deg,transparent,var(--p-accent),#22d3ee,transparent);
-  opacity:.55;
-  pointer-events:none;
-}
-.tp27-premium .tunnel-card .exit-main{
-  width:100%;
-  min-width:0;
-  padding:15px 16px 12px!important;
   gap:8px!important;
 }
-.tp27-premium .tunnel-card .exit-main>div:first-child{
-  display:flex;
-  align-items:center;
-  gap:7px;
-  min-height:24px;
-}
-.tp27-premium .tunnel-card .exit-main>div:first-child b{
-  font-size:15px;
-  letter-spacing:-.15px;
-}
-.tp27-premium .tunnel-card .exit-main>.muted{
-  font-size:11px!important;
-  line-height:1.6;
-  opacity:.9;
-}
-.tp27-premium .tunnel-card .badges{
-  width:100%;
+body[data-v9-view] #agentList>.agent-card .badges,
+body[data-v9-view] #exitList>.tunnel-card .badges{
+  width:100%!important;
+  margin-top:2px!important;
+  padding-top:8px!important;
   display:flex!important;
   flex-wrap:wrap!important;
-  gap:5px!important;
-  align-items:center;
-  justify-content:flex-start;
-  margin-top:2px!important;
-  padding-top:9px!important;
-  border-top:1px dashed color-mix(in srgb,var(--p-border) 78%,transparent);
-}
-.tp27-premium .tunnel-card .badge{
-  display:inline-flex!important;
-  align-items:center;
-  justify-content:flex-start;
-  gap:6px;
-  min-width:0!important;
-  width:auto!important;
-  flex:0 0 auto!important;
-  white-space:nowrap;
-  direction:ltr;
-  text-align:left;
-  padding:5px 8px!important;
-  border-radius:9px!important;
-  font-size:10px!important;
-  background:color-mix(in srgb,var(--p-surface-3) 88%,transparent)!important;
-}
-.tp27-premium .tunnel-card .badge b{direction:rtl;text-align:right;font-size:10px}
-.tp27-premium .tunnel-card .premium-card-meta{
-  margin-top:1px!important;
-  gap:5px!important;
-}
-.tp27-premium .tunnel-card .premium-card-meta .premium-kpi{
-  padding:4px 7px!important;
-  background:var(--p-accent-soft)!important;
-  border-color:color-mix(in srgb,var(--p-accent) 26%,var(--p-border))!important;
-  font-size:10px!important;
-}
-.tp27-premium .tunnel-card .bm-strip{
-  display:grid!important;
-  grid-template-columns:repeat(4,minmax(0,1fr));
   gap:6px!important;
-  width:100%;
-  margin-top:2px!important;
-  padding-top:9px!important;
-  border-top:1px solid color-mix(in srgb,var(--p-border) 72%,transparent);
+  border-top:1px dashed var(--v9-line)!important;
 }
-.tp27-premium .tunnel-card .bm-strip .bm-chip{
-  min-width:0;
-  min-height:31px;
-  display:flex!important;
-  align-items:center;
-  justify-content:center;
-  border-radius:10px!important;
-  padding:5px 6px!important;
-  background:color-mix(in srgb,var(--p-bg) 38%,var(--p-surface-2))!important;
-  white-space:nowrap;
-  overflow:hidden;
-  text-overflow:ellipsis;
-}
-.tp27-premium .tunnel-card .bm-strip .bm-chip:only-child{grid-column:1/-1;justify-content:flex-start}
-.tp27-premium .tunnel-card .tunnel-actions{
-  width:100%;
-  align-self:auto!important;
-  display:grid!important;
-  grid-template-columns:repeat(6,minmax(0,1fr));
-  gap:6px!important;
-  padding:10px 12px 12px!important;
-  margin:0!important;
-  border-top:1px solid var(--p-border);
-  background:color-mix(in srgb,var(--p-bg) 30%,var(--p-surface-2));
-}
-.tp27-premium .tunnel-card .tunnel-actions .btn{
-  min-width:0!important;
+body[data-v9-view] #agentList>.agent-card .bm-strip,
+body[data-v9-view] #exitList>.tunnel-card .bm-strip{
   width:100%!important;
-  padding:7px 5px!important;
+  display:grid!important;
+  grid-template-columns:repeat(4,minmax(0,1fr))!important;
+  gap:6px!important;
+  margin-top:4px!important;
+  padding-top:9px!important;
+  border-top:1px solid var(--v9-line)!important;
+}
+body[data-v9-view] #agentList>.agent-card .tunnel-actions,
+body[data-v9-view] #exitList>.tunnel-card .tunnel-actions{
+  width:auto!important;
+  min-width:0!important;
+  margin:0!important;
+  padding:0!important;
+  border:0!important;
+  background:transparent!important;
+  align-self:center!important;
+  display:flex!important;
+  flex-wrap:wrap!important;
+  justify-content:flex-start!important;
+  align-items:center!important;
+  gap:6px!important;
+}
+body[data-v9-view] #agentList>.agent-card .tunnel-actions .btn,
+body[data-v9-view] #exitList>.tunnel-card .tunnel-actions .btn{
+  width:auto!important;
+  min-width:78px!important;
+  min-height:34px!important;
+  flex:0 0 auto!important;
+  padding:7px 10px!important;
   border-radius:9px!important;
   font-size:10px!important;
-  white-space:nowrap;
-  overflow:hidden;
-  text-overflow:ellipsis;
 }
-.tp27-premium .tunnel-card .tunnel-actions .primary{box-shadow:none!important}
-.tp27-premium .tunnel-card .tunnel-actions .bm-btn{border-color:#22d3ee55!important}
-.tp27-premium .tunnel-card .tunnel-actions .premium-rebuild-btn{border-color:#8b5cf666!important}
-.tp27-premium .tunnel-card:hover{transform:translateY(-2px)!important;box-shadow:0 16px 36px #00000026!important}
-@media(max-width:1250px){
-  .tp27-premium .tunnel-card .tunnel-actions{grid-template-columns:repeat(3,minmax(0,1fr))}
-}
-@media(max-width:760px){
-  .tp27-premium .tunnel-card .bm-strip{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .tp27-premium .tunnel-card .tunnel-actions{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .tp27-premium .tunnel-card .badge{max-width:100%}
+body[data-v9-view] #agentList>.agent-card:hover,
+body[data-v9-view] #exitList>.tunnel-card:hover{
+  transform:none!important;
+  border-color:color-mix(in srgb,var(--v9-accent) 42%,var(--v9-line))!important;
+  box-shadow:none!important;
 }
 
-/* Keep the server-card action footer identical in the live list and the
-   id-stripped refresh shadow.  Without this, the shadow falls back to the
-   generic tunnel grid and the Manage/Speed buttons jump on every refresh. */
-.tp27-premium #agentList .agent-card .tunnel-actions,
-.tp27-premium .tp27-refresh-shadow[data-tp27-shadow-for="agentList"] .agent-card .tunnel-actions{
-  display:flex!important;
-  grid-template-columns:none!important;
-  direction:rtl!important;
-  justify-content:flex-end!important;
-  align-items:center!important;
-  gap:7px!important;
-  padding:10px 12px 12px!important;
+@media(max-width:1180px){
+  body[data-v9-view] #agentList>.agent-card,
+  body[data-v9-view] #exitList>.tunnel-card{grid-template-columns:1fr!important}
+  body[data-v9-view] #agentList>.agent-card .tunnel-actions,
+  body[data-v9-view] #exitList>.tunnel-card .tunnel-actions{justify-content:flex-start!important}
 }
-.tp27-premium #agentList .agent-card .tunnel-actions .btn,
-.tp27-premium .tp27-refresh-shadow[data-tp27-shadow-for="agentList"] .agent-card .tunnel-actions .btn{
-  width:auto!important;
-  min-width:96px!important;
-  flex:0 0 auto!important;
-  padding:7px 12px!important;
-}
-@media(max-width:900px){
-  .tp27-premium #agentList .agent-card .tunnel-actions,
-  .tp27-premium .tp27-refresh-shadow[data-tp27-shadow-for="agentList"] .agent-card .tunnel-actions{
-    justify-content:flex-end!important;
-  }
-  .tp27-premium #agentList .agent-card .tunnel-actions .btn,
-  .tp27-premium .tp27-refresh-shadow[data-tp27-shadow-for="agentList"] .agent-card .tunnel-actions .btn{
-    min-width:96px!important;
-    flex:0 0 auto!important;
-  }
+@media(max-width:760px){
+  body[data-v9-view] #agentList>.agent-card .bm-strip,
+  body[data-v9-view] #exitList>.tunnel-card .bm-strip{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  body[data-v9-view] #agentList>.agent-card .tunnel-actions .btn,
+  body[data-v9-view] #exitList>.tunnel-card .tunnel-actions .btn{flex:1 1 calc(50% - 6px)!important;min-width:0!important}
 }
 `;
 document.head.appendChild(style);
@@ -229,6 +159,37 @@ function normalizePortBadges(root=document){
       box.appendChild(badge);
     }
   });
+}
+
+function ensureV9SystemNav(){
+  if(!isV9())return;
+  const nav=document.querySelector('.v9-nav');
+  if(!nav)return;
+
+  if(!document.getElementById('v9PanelUpdateBtn')){
+    const update=document.createElement('button');
+    update.id='v9PanelUpdateBtn';
+    update.className='v9-nav-item';
+    update.type='button';
+    update.innerHTML='<span class="v9-nav-icon">↥</span><span>بروزرسانی پنل</span>';
+    update.onclick=()=>{
+      if(typeof window.tp27OpenPanelUpdate==='function')window.tp27OpenPanelUpdate();
+      else alert('ماژول بروزرسانی هنوز آماده نشده است؛ صفحه را یک‌بار تازه‌سازی کنید.');
+    };
+    nav.appendChild(update);
+  }
+
+  if(!document.getElementById('v9GitHubLink')){
+    const github=document.createElement('a');
+    github.id='v9GitHubLink';
+    github.className='v9-nav-item';
+    github.href='https://github.com/matin111/tp27-core';
+    github.target='_blank';
+    github.rel='noopener noreferrer';
+    github.style.textDecoration='none';
+    github.innerHTML='<span class="v9-nav-icon">⌘</span><span>GitHub</span>';
+    nav.appendChild(github);
+  }
 }
 
 function stripIds(node){
@@ -280,6 +241,9 @@ function freezeList(id){
 }
 
 function freezeDashboard(){
+  /* V9 keeps the live list in place. A cloned shadow was the source of the
+     visible second card model during refresh. Legacy UI can still use it. */
+  if(isV9())return ()=>{};
   const cleanups=[freezeList('agentList'),freezeList('exitList')].filter(Boolean);
   return ()=>{for(const fn of cleanups.reverse())try{fn()}catch(_){} };
 }
@@ -359,10 +323,12 @@ function installRefreshHook(){
 }
 
 async function releaseBoot(){
+  ensureV9SystemNav();
   installLoadStatusHook();
   installRefreshHook();
   await waitForStableUi(BOOT_MAX_MS);
   normalizePortBadges();
+  ensureV9SystemNav();
   document.documentElement.classList.remove('tp27-ui-stabilizing');
 }
 
@@ -373,6 +339,7 @@ if(document.readyState==='loading'){
 }
 
 window.addEventListener('pageshow',()=>{
+  ensureV9SystemNav();
   installLoadStatusHook();
   installRefreshHook();
   normalizePortBadges();
