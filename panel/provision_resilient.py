@@ -113,9 +113,11 @@ def _local_log(eid):
 
 
 def _cleanup_local(eid):
-    for svc in (f'tp27-link@{eid}.service', f'tp27-framed@{eid}.service'):
-        run(['systemctl', 'disable', '--now', svc], check=False)
-        run(['systemctl', 'reset-failed', svc], check=False)
+    services = (f'tp27-link@{eid}.service', f'tp27-framed@{eid}.service')
+    # Both instances are mutually exclusive for one tunnel ID. Batch systemd
+    # operations so a new candidate does not pay four control-plane round trips.
+    run(['systemctl', 'disable', '--now', *services], check=False)
+    run(['systemctl', 'reset-failed', *services], check=False)
     iface = iface_for(eid)
     run(['ip', 'link', 'del', iface], check=False)
     try:
@@ -202,9 +204,10 @@ def _write_local_tls(eid, iface, local_ip, remote_addr, iran_ip, endpoint,
 
 def _start_local(eid, transport):
     svc = _service_name(eid, transport)
-    run(['systemctl', 'daemon-reload'])
-    run(['systemctl', 'enable', svc], check=False)
-    rc, out, err = run(['systemctl', 'restart', svc], check=False)
+    # The template unit is installed/reloaded by the managed panel installer.
+    # Candidate creation only writes per-tunnel JSON, so daemon-reload here is
+    # redundant. pre-cleanup guarantees the instance is stopped before start.
+    rc, out, err = run(['systemctl', 'enable', '--now', svc], check=False)
     if rc != 0:
         raise RuntimeError(err or out or f'{svc} Start نشد')
 
@@ -410,8 +413,15 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None,
 
         stage_started = time.monotonic()
         _cleanup_local(eid)
-        await _cleanup_remote(agent_id, eid)
-        _timing_add(kernel_timings, 'pre_cleanup', stage_started)
+        # Every remote provision action is idempotent for the same tunnel ID:
+        # it stops any stale instance before replacing its config. A separate
+        # delete_exit round trip here duplicated that work and cost ~3.2s on
+        # the measured Raw GRE path. Keep authoritative remote deletion for
+        # terminal failure cleanup below.
+        _timing_add(
+            kernel_timings, 'pre_cleanup', stage_started,
+            remote='deferred-to-provision',
+        )
 
         job_set(job_id, message=f'مرحله 1: Raw GRE {iran_ip} ↔ {endpoint}')
         raw_remote = {}
