@@ -17,8 +17,10 @@ from pathlib import Path
 import requests
 
 PLAIN_VERSION = '1.5.0'
-SPEED_AGENT_VERSION = '1.6.0'
-POLL_SECONDS = max(0.5, min(float(os.environ.get('TP27_AGENT_POLL_SECONDS', '1') or 1), 5.0))
+SPEED_AGENT_VERSION = '1.7.0'
+POLL_SECONDS = max(0.5, min(float(os.environ.get('TP27_AGENT_POLL_SECONDS', '0.5') or 0.5), 5.0))
+REMOTE_GRE_READY_DEADLINE = 3.0
+REMOTE_GRE_READY_POLL = 0.05
 BASE_AGENT = Path('/opt/tp27-exit-agent/tp27-exit-agent.py')
 GOST_ADDON = Path('/opt/tp27-exit-agent/tp27_gost_addon.py')
 OPENVPN_ADDON = Path('/opt/tp27-exit-agent/tp27_openvpn_addon.py')
@@ -52,9 +54,9 @@ def load_base():
 
 
 BASE = load_base()
-# The universal runner owns the low-latency control loop.  Advertising a new
-# base generation lets the panel upgrade existing v1.5.x agents automatically
-# without touching unrelated VPN services on the exit host.
+# The universal runner owns the low-latency control loop. Advertising a new
+# base generation lets the panel upgrade older agents without touching
+# unrelated VPN services or already-running TP27 data planes.
 BASE.VERSION = SPEED_AGENT_VERSION
 if GOST_ADDON.exists():
     GOST = load_module(GOST_ADDON, 'tp27_gost_addon_plain')
@@ -63,6 +65,151 @@ if OPENVPN_ADDON.exists():
     OPENVPN = load_module(OPENVPN_ADDON, 'tp27_openvpn_addon_plain')
     OPENVPN.install(BASE)
 BASE_VERSION = getattr(BASE, 'VERSION', 'unknown')
+
+
+def _elapsed_ms(started):
+    return max(0, int(round((time.monotonic() - started) * 1000)))
+
+
+def _fast_stop_exit_services(eid):
+    services = (
+        'tp27-link@' + eid + '.service',
+        'tp27-framed@' + eid + '.service',
+    )
+    # One systemd transaction per operation instead of four independent
+    # round trips. Both instances are mutually exclusive for a tunnel ID.
+    BASE.run(['systemctl', 'disable', '--now', *services], timeout=25, check=False)
+    BASE.run(['systemctl', 'reset-failed', *services], timeout=15, check=False)
+    BASE.run(['ip', 'link', 'del', BASE._iface(eid)], timeout=10, check=False)
+
+
+def _fast_action_provision_gre_exit(args):
+    started = time.monotonic()
+    eid = BASE.safe_id(str(args.get('id', '')))
+    BASE.ensure_runtime()
+    iran_public = BASE._ipv4(args.get('iran_public'), 'iran_public')
+    exit_public = BASE._ipv4(args.get('exit_public') or BASE.public_ip(), 'exit_public')
+    tunnel_ip = str(args.get('tunnel_ip', '')).strip()
+    peer_ip = BASE._ipv4(args.get('peer_ip'), 'peer_ip')
+    iface_addr = ipaddress.ip_interface(tunnel_ip)
+    if iface_addr.version != 4:
+        raise ValueError('tunnel_ip must be IPv4')
+    mtu = int(args.get('mtu', 1400))
+    if not 1000 <= mtu <= 1476:
+        raise ValueError('GRE mtu must be between 1000 and 1476')
+    gre_key = int(args.get('gre_key', 0))
+    if not 1 <= gre_key <= 4294967295:
+        raise ValueError('invalid GRE key')
+    transport = str(args.get('transport') or 'gre').strip().lower()
+    if transport not in {'gre', 'gre-fou'}:
+        raise ValueError('invalid GRE transport')
+    fou_port = int(args.get('fou_port') or 0)
+    if transport == 'gre-fou' and not (fou_port == 443 or 1024 <= fou_port <= 65535):
+        raise ValueError('invalid FOU port')
+
+    BASE.EXITS.mkdir(parents=True, exist_ok=True)
+
+    cleanup_started = time.monotonic()
+    _fast_stop_exit_services(eid)
+    cleanup_ms = _elapsed_ms(cleanup_started)
+
+    iface = BASE._iface(eid)
+    cfg = {
+        'role': 'gre-exit', 'id': eid, 'interface': iface, 'tunnel_ip': tunnel_ip,
+        'peer_ip': peer_ip, 'local_public': exit_public, 'remote_public': iran_public,
+        'gre_key': gre_key, 'mtu': mtu, 'txqueuelen': int(args.get('txqueuelen', 1000)),
+        'transport': transport, 'fou_port': fou_port,
+    }
+    BASE.atomic_json(BASE.EXITS / (eid + '.json'), cfg)
+
+    start_started = time.monotonic()
+    svc = 'tp27-link@' + eid + '.service'
+    rc, out, err = BASE.run(['systemctl', 'enable', '--now', svc], timeout=30, check=False)
+    if rc != 0:
+        raise RuntimeError(err or out or 'GRE exit link start failed')
+
+    expected_ip = str(iface_addr.ip)
+    ready = False
+    addr_out = ''
+    deadline = time.monotonic() + REMOTE_GRE_READY_DEADLINE
+    while time.monotonic() < deadline:
+        addr_rc, addr_out, _ = BASE.run(
+            ['ip', '-br', '-4', 'addr', 'show', 'dev', iface],
+            timeout=3,
+            check=False,
+        )
+        if addr_rc == 0 and expected_ip in (addr_out or ''):
+            ready = True
+            break
+        time.sleep(REMOTE_GRE_READY_POLL)
+
+    active = subprocess.run(
+        ['systemctl', 'is-active', '--quiet', svc],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ).returncode == 0
+    start_ready_ms = _elapsed_ms(start_started)
+
+    if not active or not ready:
+        _, logs, logs_err = BASE.run(
+            ['journalctl', '-u', svc, '-n', '50', '--no-pager', '-o', 'cat'],
+            timeout=15,
+            check=False,
+        )
+        state = 'inactive' if not active else 'interface-not-ready'
+        raise RuntimeError(
+            'GRE exit readiness failed (' + state + '): ' +
+            (logs or logs_err or addr_out or 'no diagnostics')[-3200:]
+        )
+
+    ping_started = time.monotonic()
+    ping_rc, ping_out, ping_err = BASE.run(
+        ['ping', '-I', iface, '-c', '1', '-W', '1', '-w', '2', peer_ip],
+        timeout=3,
+        check=False,
+    )
+    ping_ms = _elapsed_ms(ping_started)
+
+    diag_started = time.monotonic()
+    _, route_out, _ = BASE.run(
+        ['ip', '-4', 'route', 'show', 'dev', iface], timeout=10, check=False,
+    )
+    _, link_out, _ = BASE.run(
+        ['ip', '-s', 'link', 'show', 'dev', iface], timeout=10, check=False,
+    )
+    diagnostics_ms = _elapsed_ms(diag_started)
+
+    return {
+        'id': eid,
+        'mode': 'gre-fou' if transport == 'gre-fou' else 'gre-native',
+        'transport': transport,
+        'fou_port': fou_port or None,
+        'service_active': active,
+        'health_ping': ping_rc == 0,
+        'ping_output': ping_out or ping_err,
+        'interface': iface,
+        'interface_state': addr_out,
+        'route_state': route_out,
+        'link_state': link_out,
+        'tunnel_ip': tunnel_ip,
+        'peer_ip': peer_ip,
+        'gre_key': gre_key,
+        'agent_version': BASE.VERSION,
+        'remote_timing_v1': {
+            'total_ms': _elapsed_ms(started),
+            'cleanup_ms': cleanup_ms,
+            'start_ready_ms': start_ready_ms,
+            'diagnostic_ping_ms': ping_ms,
+            'diagnostics_ms': diagnostics_ms,
+        },
+    }
+
+
+# Install the low-latency primitives after optional add-ons are registered.
+# Add-on actions keep using BASE._stop_exit_services dynamically, so they gain
+# the batched cleanup without changing their protocol-specific behavior.
+BASE._stop_exit_services = _fast_stop_exit_services
+BASE.ACTIONS['provision_gre_exit'] = _fast_action_provision_gre_exit
 
 
 def _bench_ip(value, name):
@@ -355,7 +502,7 @@ def run_forever():
     while True:
         try:
             # Same low-latency order as HTTPS: commands first, heartbeat only
-            # while idle.  The poll request itself keeps last_seen fresh.
+            # while idle. The poll request itself keeps last_seen fresh.
             reply = signed_post(cfg, '/v1/poll', {}, timeout=30)
             command = reply.get('command')
             if command:

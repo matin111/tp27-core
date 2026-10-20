@@ -12,8 +12,8 @@ def test_builder_requires_low_latency_agent_generation():
 
 def test_universal_agent_polls_commands_before_heartbeat():
     text = (ROOT / 'agent/tp27-exit-agent-plain.py').read_text(encoding='utf-8')
-    assert "SPEED_AGENT_VERSION = '1.6.0'" in text
-    assert "TP27_AGENT_POLL_SECONDS', '1'" in text
+    assert "SPEED_AGENT_VERSION = '1.7.0'" in text
+    assert "TP27_AGENT_POLL_SECONDS', '0.5'" in text
     assert 'def run_https_fast()' in text
     https_body = text.split('def run_https_fast()', 1)[1].split('def run_forever()', 1)[0]
     assert https_body.index("'/api/agent/poll'") < https_body.index("'/api/agent/heartbeat'")
