@@ -16,13 +16,13 @@ class AgentUpgradeTimeoutTests(unittest.TestCase):
         old = {
             'agent_id': 'exit-test',
             'online': True,
-            'version': '1.5.1',
+            'version': '1.6.0',
             'public_ip': '203.0.113.10',
         }
         upgraded = {
             'agent_id': 'exit-test',
             'online': True,
-            'version': '1.6.0',
+            'version': '1.7.0',
             'public_ip': '203.0.113.10',
         }
         seen = [old, upgraded]
@@ -44,15 +44,15 @@ class AgentUpgradeTimeoutTests(unittest.TestCase):
              patch.object(resilient, 'job_set', side_effect=fake_job_set):
             result = asyncio.run(resilient._ensure_agent('exit-test', 'job-1'))
 
-        self.assertEqual(result['version'], '1.6.0')
+        self.assertEqual(result['version'], '1.7.0')
         self.assertTrue(any('هنوز در حال اجراست' in text for text in messages))
-        self.assertTrue(any('Agent v1.6.0 آنلاین شد' in text for text in messages))
+        self.assertTrue(any('Agent v1.7.0 آنلاین شد' in text for text in messages))
 
     def test_explicit_upgrade_failure_is_not_ignored(self):
         old = {
             'agent_id': 'exit-test',
             'online': True,
-            'version': '1.5.1',
+            'version': '1.6.0',
             'public_ip': '203.0.113.10',
         }
         failed = {
@@ -73,6 +73,10 @@ class AgentUpgradeTimeoutTests(unittest.TestCase):
         self.assertEqual(resilient.AGENT_UPGRADE_COMMAND_TIMEOUT, 90)
         self.assertEqual(resilient.AGENT_UPGRADE_RECONNECT_TIMEOUT, 90)
         self.assertEqual(resilient.AGENT_RECONNECT_POLL, 1.0)
+
+    def test_rollout_contract_requires_fast_agent_v17(self):
+        self.assertEqual(resilient.MIN_AGENT_VERSION, (1, 7, 0))
+        self.assertEqual(resilient.AGENT_UPGRADE_TARGET, '1.7.0')
 
 
 if __name__ == '__main__':
