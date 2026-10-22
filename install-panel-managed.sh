@@ -72,15 +72,25 @@ echo "TARGET=${TARGET:-main}"
 fetch panel/requirements.txt "$PANEL/requirements.txt"
 "$PANEL/venv/bin/pip" install -r "$PANEL/requirements.txt" >/dev/null
 
-for f in app.py auth.py provision.py provision_password.py provision_agent.py agent_control.py ports.py portplan.py carrier_check.py plain_control.py self_update.py safe_switch.py safe_switch_router.py health_v2.py failover_v2.py; do
+for f in app.py auth.py provision.py provision_password.py provision_agent.py agent_control.py ports.py portplan.py plain_control.py self_update.py safe_switch.py safe_switch_router.py health_v2.py failover_v2.py; do
   fetch "panel/$f" "$PANEL/$f"
 done
 fetch panel/provision_resilient.py "$PANEL/provision_resilient.py"
 fetch panel/provision_multicore.py "$PANEL/provision_gre.py"
 
-for f in index.html login.html style.css first-paint.css app.js fast-ui.js agent-manage.js premium.css v9.css premium-ui.js runtime-refresh-fix.js benchmark-ui.js benchmark-auto.js server-speed-ui.js speed-recovery-fix.js safe-switch-ui.js self-update.js ui-stability.js spoof-lab-guide.html; do
+for f in index.html login.html style.css first-paint.css app.js fast-ui.js agent-manage.js premium.css v9.css premium-ui.js runtime-refresh-fix.js benchmark-ui.js benchmark-auto.js server-speed-ui.js speed-recovery-fix.js safe-switch-ui.js self-update.js ui-stability.js; do
   fetch "panel/static/$f" "$STATIC/$f"
 done
+
+# Remove the retired External Carrier / Spoof Readiness feature from existing
+# installations. These are control-plane artifacts only; no TP27 data-plane
+# service, route or interface is touched here.
+rm -f \
+  "$PANEL/carrier_check.py" \
+  "$STATIC/spoof-lab-guide.html" \
+  /etc/tp27/external-carriers.json
+
+echo "RETIRED_CARRIER_TOOLS=removed"
 
 python3 - "$STATIC/index.html" <<'PY'
 from pathlib import Path
@@ -176,7 +186,7 @@ PY
   "$PANEL/provision_password.py" "$PANEL/provision_agent.py" \
   "$PANEL/provision_resilient.py" "$PANEL/provision_gre.py" \
   "$PANEL/agent_control.py" "$PANEL/plain_control.py" \
-  "$PANEL/ports.py" "$PANEL/portplan.py" "$PANEL/carrier_check.py" "$PANEL/self_update.py" \
+  "$PANEL/ports.py" "$PANEL/portplan.py" "$PANEL/self_update.py" \
   "$PANEL/safe_switch.py" "$PANEL/safe_switch_router.py" \
   "$PANEL/health_v2.py" "$PANEL/failover_v2.py" \
   /usr/local/lib/tp27/tp27-link-preflight \
