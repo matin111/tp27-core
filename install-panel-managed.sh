@@ -78,7 +78,7 @@ done
 fetch panel/provision_resilient.py "$PANEL/provision_resilient.py"
 fetch panel/provision_multicore.py "$PANEL/provision_gre.py"
 
-for f in index.html login.html style.css first-paint.css app.js fast-ui.js agent-manage.js premium.css v9.css premium-ui.js runtime-refresh-fix.js benchmark-ui.js benchmark-auto.js server-speed-ui.js speed-recovery-fix.js safe-switch-ui.js self-update.js ui-stability.js; do
+for f in index.html login.html style.css first-paint.css app.js fast-ui.js agent-manage.js premium.css v9.css premium-ui.js runtime-refresh-fix.js benchmark-ui.js benchmark-auto.js server-speed-ui.js speed-recovery-fix.js safe-switch-ui.js self-update.js ui-stability.js spoof-lab-guide.html; do
   fetch "panel/static/$f" "$STATIC/$f"
 done
 
