@@ -13,7 +13,7 @@ import provision_multicore as fallback
 import provision_resilient as legacy
 from agent_control import get_agent, queue_command, wait_command
 from portplan import apply_plan, validate_plan
-from provision import CERTS, CORE_CONFIG, EXITS, JOBS, atomic_json, iface_for, job_set, load_json, run, validate_id
+from provision import CERTS, CORE_CONFIG, EXITS, atomic_json, iface_for, job_set, load_json, run, validate_id
 
 IP6GRE_MTU = 1420
 WIREGUARD_V6_MTU = 1380
@@ -129,12 +129,13 @@ async def _upgrade_agent_once(agent_id, job_id):
         await wait_command(command['id'], timeout=90)
     except TimeoutError:
         pass
+    await asyncio.sleep(7)
     deadline = time.monotonic() + AGENT_UPGRADE_WAIT
     while time.monotonic() < deadline:
-        await asyncio.sleep(1)
         agent = get_agent(agent_id)
         if agent and agent.get('online'):
             return True
+        await asyncio.sleep(1)
     return False
 
 
@@ -143,28 +144,29 @@ async def _ipv6_preflight(agent_id, iran_v6, job_id):
     if not isinstance(probe, dict) or probe.get('api') != 1:
         if not await _upgrade_agent_once(agent_id, job_id):
             return None
-        probe = await _remote_status(agent_id, iran_v6)
+        deadline = time.monotonic() + 25
+        while time.monotonic() < deadline:
+            try:
+                probe = await _remote_status(agent_id, iran_v6)
+            except Exception:
+                probe = None
+            if isinstance(probe, dict) and probe.get('api') == 1:
+                break
+            await asyncio.sleep(1)
     if not isinstance(probe, dict) or probe.get('api') != 1:
         return None
     exit_v6 = _global_ipv6(probe.get('public_ipv6'))
-    if not exit_v6:
-        return None
-    if not probe.get('route_ok'):
+    if not exit_v6 or not probe.get('route_ok'):
         return None
     return {**probe, 'public_ipv6': exit_v6}
 
 
 async def _remote_ip6gre(agent_id, eid, iran_v6, exit_v6, remote_ip, local_addr, key, mtu):
-    command = queue_command(agent_id, 'provision_gre_exit', {
-        'id': eid,
-        'transport': 'ip6gre',
-        'iran_public_ipv6': iran_v6,
-        'exit_public_ipv6': exit_v6,
-        'tunnel_ip': remote_ip,
-        'peer_ip': local_addr,
-        'gre_key': int(key),
-        'mtu': int(mtu),
-        'txqueuelen': 2000,
+    command = queue_command(agent_id, 'provision_tls_exit', {
+        'id': eid, 'transport': 'ip6gre',
+        'iran_public_ipv6': iran_v6, 'exit_public_ipv6': exit_v6,
+        'tunnel_ip': remote_ip, 'peer_ip': local_addr,
+        'gre_key': int(key), 'mtu': int(mtu), 'txqueuelen': 2000,
     })
     item = await wait_command(command['id'], timeout=70)
     if item.get('state') != 'done' or not item.get('ok'):
@@ -177,17 +179,12 @@ async def _remote_ip6gre(agent_id, eid, iran_v6, exit_v6, remote_ip, local_addr,
 
 async def _remote_wireguard(agent_id, eid, iran_v6, exit_v6, remote_ip,
                             local_addr, local_public_key, port, mtu):
-    command = queue_command(agent_id, 'provision_gre_exit', {
-        'id': eid,
-        'transport': 'wireguard-v6',
-        'iran_public_ipv6': iran_v6,
-        'exit_public_ipv6': exit_v6,
-        'tunnel_ip': remote_ip,
-        'peer_ip': local_addr,
-        'peer_public_key': local_public_key,
-        'listen_port': int(port),
-        'mtu': int(mtu),
-        'txqueuelen': 2000,
+    command = queue_command(agent_id, 'provision_tls_exit', {
+        'id': eid, 'transport': 'wireguard-v6',
+        'iran_public_ipv6': iran_v6, 'exit_public_ipv6': exit_v6,
+        'tunnel_ip': remote_ip, 'peer_ip': local_addr,
+        'peer_public_key': local_public_key, 'listen_port': int(port),
+        'mtu': int(mtu), 'txqueuelen': 2000,
     })
     item = await wait_command(command['id'], timeout=150)
     if item.get('state') != 'done' or not item.get('ok'):
@@ -212,21 +209,12 @@ async def _cleanup(agent_id, eid, private_file=None):
 def _save_success(job_id, core, eid, iface, local_ip, peer_ip, agent_id,
                   transport, local_v6, exit_v6, mtu, port_plan, remote, port=None):
     rec = {
-        'id': eid,
-        'mode': transport,
-        'transport': transport,
+        'id': eid, 'mode': transport, 'transport': transport,
         'engine': 'kernel' if transport == 'ip6gre' else 'wireguard',
-        'interface': iface,
-        'endpoint': exit_v6,
-        'port': int(port) if port else None,
-        'local_ip': local_ip,
-        'remote_ip': peer_ip,
-        'agent_id': agent_id,
-        'mtu': int(mtu),
-        'public_local': local_v6,
-        'public_remote': exit_v6,
-        'underlay_family': 'ipv6',
-        'service': f'tp27-link@{eid}.service',
+        'interface': iface, 'endpoint': exit_v6, 'port': int(port) if port else None,
+        'local_ip': local_ip, 'remote_ip': peer_ip, 'agent_id': agent_id,
+        'mtu': int(mtu), 'public_local': local_v6, 'public_remote': exit_v6,
+        'underlay_family': 'ipv6', 'service': f'tp27-link@{eid}.service',
     }
     if transport == 'ip6gre':
         rec['gre_key'] = int(remote.get('gre_key') or 0)
@@ -237,12 +225,9 @@ def _save_success(job_id, core, eid, iface, local_ip, peer_ip, agent_id,
     atomic_json(CORE_CONFIG, core)
     applied = apply_plan(eid, port_plan) if port_plan else []
     label = 'IP6GRE' if transport == 'ip6gre' else 'WireGuard-v6'
-    job_set(
-        job_id,
-        state='done',
-        message=f'{eid} {label} ONLINE · IPv6 Underlay · {local_ip.split("/")[0]} ↔ {peer_ip}',
-        result={**rec, 'mappings': applied, 'remote': remote},
-    )
+    job_set(job_id, state='done',
+            message=f'{eid} {label} ONLINE · IPv6 Underlay · {local_ip.split("/")[0]} ↔ {peer_ip}',
+            result={**rec, 'mappings': applied, 'remote': remote})
 
 
 async def try_ipv6_fast_path(job_id, agent_id, requested_id=None, mtu=1400, mappings=None):
@@ -253,7 +238,6 @@ async def try_ipv6_fast_path(job_id, agent_id, requested_id=None, mtu=1400, mapp
     if not iran_v6:
         job_set(job_id, message='IPv6 Core: روی سرور ایران Native IPv6 پیدا نشد؛ ادامه با Coreهای فعلی')
         return False
-
     try:
         probe = await _ipv6_preflight(agent_id, iran_v6, job_id)
     except Exception as exc:
@@ -271,30 +255,21 @@ async def try_ipv6_fast_path(job_id, agent_id, requested_id=None, mtu=1400, mapp
     local_addr = str(ipaddress.ip_interface(local_ip).ip)
     remote_addr = str(ipaddress.ip_interface(remote_ip).ip)
     iface = iface_for(eid)
-
     job_set(job_id, state='running', message=f'IPv6 Core: Native IPv6 آماده است · {iran_v6} ↔ {exit_v6}')
 
     if probe.get('ip6gre_supported'):
         key = legacy._gre_key(eid, iran_v6, exit_v6)
-        ip6gre_mtu = IP6GRE_MTU
         try:
             job_set(job_id, message='IPv6 Core مرحله 1: IP6GRE Kernel Fast Path')
-            remote = await _remote_ip6gre(
-                agent_id, eid, iran_v6, exit_v6, remote_ip, local_addr, key, ip6gre_mtu,
-            )
-            _local_cfg_ip6gre(
-                eid, iface, local_ip, remote_addr, iran_v6, exit_v6,
-                key, ip6gre_mtu, agent_id,
-            )
+            remote = await _remote_ip6gre(agent_id, eid, iran_v6, exit_v6, remote_ip, local_addr, key, IP6GRE_MTU)
+            _local_cfg_ip6gre(eid, iface, local_ip, remote_addr, iran_v6, exit_v6, key, IP6GRE_MTU, agent_id)
             _start_local(eid)
             await asyncio.sleep(0.25)
             healthy, ping_text = await legacy._health_peer(iface, remote_addr, tries=8)
             if healthy:
-                _save_success(
-                    job_id, core, eid, iface, local_ip, remote_addr, agent_id,
-                    'ip6gre', iran_v6, exit_v6, ip6gre_mtu, port_plan,
-                    {**remote, 'gre_key': key, 'ping': ping_text},
-                )
+                _save_success(job_id, core, eid, iface, local_ip, remote_addr, agent_id,
+                              'ip6gre', iran_v6, exit_v6, IP6GRE_MTU, port_plan,
+                              {**remote, 'gre_key': key, 'ping': ping_text})
                 return True
             raise RuntimeError('Peer health IP6GRE تأیید نشد')
         except Exception as exc:
@@ -308,24 +283,17 @@ async def try_ipv6_fast_path(job_id, agent_id, requested_id=None, mtu=1400, mapp
                 job_set(job_id, message=f'IPv6 Core مرحله 2: WireGuard-v6 UDP/{port}')
                 private_key, public_key = _wg_keypair()
                 _write_secret(private_file, private_key)
-                remote = await _remote_wireguard(
-                    agent_id, eid, iran_v6, exit_v6, remote_ip, local_addr,
-                    public_key, port, WIREGUARD_V6_MTU,
-                )
-                _local_cfg_wg(
-                    eid, iface, local_ip, remote_addr, iran_v6, exit_v6,
-                    private_file, remote['wg_public_key'], port,
-                    WIREGUARD_V6_MTU, agent_id,
-                )
+                remote = await _remote_wireguard(agent_id, eid, iran_v6, exit_v6, remote_ip,
+                                                 local_addr, public_key, port, WIREGUARD_V6_MTU)
+                _local_cfg_wg(eid, iface, local_ip, remote_addr, iran_v6, exit_v6,
+                              private_file, remote['wg_public_key'], port, WIREGUARD_V6_MTU, agent_id)
                 _start_local(eid)
                 await asyncio.sleep(0.7)
                 healthy, ping_text = await legacy._health_peer(iface, remote_addr, tries=10)
                 if healthy:
-                    _save_success(
-                        job_id, core, eid, iface, local_ip, remote_addr, agent_id,
-                        'wireguard-v6', iran_v6, exit_v6, WIREGUARD_V6_MTU,
-                        port_plan, {**remote, 'ping': ping_text}, port=port,
-                    )
+                    _save_success(job_id, core, eid, iface, local_ip, remote_addr, agent_id,
+                                  'wireguard-v6', iran_v6, exit_v6, WIREGUARD_V6_MTU,
+                                  port_plan, {**remote, 'ping': ping_text}, port=port)
                     return True
                 raise RuntimeError('Peer health WireGuard-v6 تأیید نشد')
             except Exception as exc:
@@ -343,5 +311,4 @@ async def provision_gre_via_agent(job_id, agent_id, requested_id=None, mtu=1400,
     except Exception as exc:
         job_set(job_id, message=f'IPv6 Core fail-open: {exc} · ادامه با مسیر فعلی')
     return await fallback.provision_gre_via_agent(
-        job_id, agent_id, requested_id=requested_id, mtu=mtu, mappings=mappings,
-    )
+        job_id, agent_id, requested_id=requested_id, mtu=mtu, mappings=mappings)
