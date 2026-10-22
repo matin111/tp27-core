@@ -72,7 +72,7 @@ echo "TARGET=${TARGET:-main}"
 fetch panel/requirements.txt "$PANEL/requirements.txt"
 "$PANEL/venv/bin/pip" install -r "$PANEL/requirements.txt" >/dev/null
 
-for f in app.py auth.py provision.py provision_password.py provision_agent.py agent_control.py ports.py portplan.py plain_control.py self_update.py safe_switch.py safe_switch_router.py health_v2.py failover_v2.py; do
+for f in app.py auth.py provision.py provision_password.py provision_agent.py agent_control.py ports.py portplan.py carrier_check.py plain_control.py self_update.py safe_switch.py safe_switch_router.py health_v2.py failover_v2.py; do
   fetch "panel/$f" "$PANEL/$f"
 done
 fetch panel/provision_resilient.py "$PANEL/provision_resilient.py"
@@ -176,7 +176,7 @@ PY
   "$PANEL/provision_password.py" "$PANEL/provision_agent.py" \
   "$PANEL/provision_resilient.py" "$PANEL/provision_gre.py" \
   "$PANEL/agent_control.py" "$PANEL/plain_control.py" \
-  "$PANEL/ports.py" "$PANEL/portplan.py" "$PANEL/self_update.py" \
+  "$PANEL/ports.py" "$PANEL/portplan.py" "$PANEL/carrier_check.py" "$PANEL/self_update.py" \
   "$PANEL/safe_switch.py" "$PANEL/safe_switch_router.py" \
   "$PANEL/health_v2.py" "$PANEL/failover_v2.py" \
   /usr/local/lib/tp27/tp27-link-preflight \
