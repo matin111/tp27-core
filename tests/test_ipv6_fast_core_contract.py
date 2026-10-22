@@ -15,6 +15,10 @@ def test_ipv6_builder_order_and_fail_open_contract():
     assert 'return await fallback.provision_gre_via_agent' in text
     assert "underlay_family': 'ipv6'" in text
     assert "WIREGUARD_PORTS = (51820, 51888, 443)" in text
+    # Plain Agent replaces provision_gre_exit with its IPv4 fast handler, so
+    # the IPv6 extension must travel through an action that remains delegated
+    # to the base Agent.
+    assert "queue_command(agent_id, 'provision_tls_exit'" in text
 
 
 def test_ipv6_builder_accepts_only_global_v6():
@@ -41,6 +45,19 @@ def test_agent_and_runtime_support_ipv6_transports():
     assert 'endpoint "[${V6_REMOTE_PUBLIC}]:${WG_REMOTE_PORT}"' in runtime
     assert 'TP27_IP6GRE_READY' in runtime
     assert 'TP27_WGV6_READY' in runtime
+
+
+def test_tls_action_dispatches_ipv6_before_ipv4_tls_validation():
+    agent = (ROOT / 'agent' / 'tp27-exit-agent.py').read_text(encoding='utf-8')
+    start = agent.index('def action_provision_tls_exit(args):')
+    end = agent.index('\ndef action_restart_link', start)
+    handler = agent[start:end]
+    dispatch = "if transport in {'ip6gre', 'wireguard-v6'}:"
+    ipv4_parse = "iran_public = _ipv4(args.get('iran_public'), 'iran_public')"
+    assert dispatch in handler
+    assert ipv4_parse in handler
+    assert handler.index(dispatch) < handler.index(ipv4_parse)
+    assert 'return _action_provision_ipv6_exit(args, transport)' in handler
 
 
 def test_managed_installer_deploys_wrapper_without_restarting_data_planes():
