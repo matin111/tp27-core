@@ -577,6 +577,10 @@ def action_provision_gre_exit(args):
 
 
 def action_provision_tls_exit(args):
+    transport = str(args.get('transport') or 'framed-tls').strip().lower()
+    if transport in {'ip6gre', 'wireguard-v6'}:
+        return _action_provision_ipv6_exit(args, transport)
+
     eid = safe_id(str(args.get('id', '')))
     ensure_runtime()
     iran_public = _ipv4(args.get('iran_public'), 'iran_public')
