@@ -130,5 +130,7 @@ def test_failover_v2_defaults_to_inert_and_scoped():
     assert '"tunnels": []' in installer
     assert 'health_v2.py failover_v2.py' in installer
     assert 'tp27-failover-v2.service' in installer
-    assert 'FAILOVER_V2=disabled' in installer
+    assert 'New Failover V2 config must default to disabled' in installer
+    assert 'FAILOVER_V2_RESTART=deferred-enabled' in installer
+    assert 'FAILOVER_V2_RESTART=$FAILOVER_RESTART_STATE' in installer
     assert 'ExecStart=/opt/tp27-panel/venv/bin/python /opt/tp27-panel/failover_v2.py' in unit

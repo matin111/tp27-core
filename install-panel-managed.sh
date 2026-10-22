@@ -129,6 +129,9 @@ chmod 755 \
   /usr/local/lib/tp27/tp27-gost-install.sh
 chmod 600 "$PANEL"/*.py
 
+# A fresh installation ships Failover V2 disabled. Managed updates must preserve
+# an existing operator-owned runtime configuration exactly as-is.
+export TP27_FAILOVER_CONFIG_CREATED=0
 if [[ ! -f /etc/tp27/failover-v2.json ]]; then
   cat >/etc/tp27/failover-v2.json <<'JSON'
 {
@@ -140,7 +143,20 @@ if [[ ! -f /etc/tp27/failover-v2.json ]]; then
 }
 JSON
   chmod 600 /etc/tp27/failover-v2.json
+  TP27_FAILOVER_CONFIG_CREATED=1
 fi
+
+FAILOVER_ENABLED="$(python3 - <<'PY'
+import json
+from pathlib import Path
+p=Path('/etc/tp27/failover-v2.json')
+obj=json.loads(p.read_text(encoding='utf-8'))
+value=obj.get('enabled')
+if not isinstance(value, bool):
+    raise SystemExit('Failover V2 enabled must be boolean')
+print('true' if value else 'false')
+PY
+)"
 
 python3 - "$PANEL/app.py" <<'PY'
 from pathlib import Path
@@ -191,10 +207,17 @@ systemctl enable tp27-failover-v2.service >/dev/null 2>&1 || true
 systemctl restart tp27-panel.service
 systemctl restart tp27-ports-reconcile.service || true
 systemctl restart tp27-benchmark.service || true
-# Failover V2 ships globally disabled. Starting/restarting this controller is
-# control-plane-only and cannot mutate tunnels until explicitly enabled or run
-# with --tunnel for an isolated test.
-systemctl restart tp27-failover-v2.service || true
+# Do not restart an already-enabled Failover V2 controller during a managed
+# panel update: it could immediately evaluate/switch a tunnel and violate the
+# update transaction's data-plane preservation guarantee. Disabled/new configs
+# are safe to refresh immediately; enabled configs are deliberately deferred.
+if [[ "$FAILOVER_ENABLED" == "false" ]]; then
+  systemctl restart tp27-failover-v2.service || true
+  FAILOVER_RESTART_STATE=performed-disabled
+else
+  FAILOVER_RESTART_STATE=deferred-enabled
+  echo "FAILOVER_V2_RESTART=deferred-enabled"
+fi
 
 # Agent control reconnects automatically; a short control-plane restart does not touch data planes.
 if systemctl cat tp27-plain-control.service >/dev/null 2>&1; then
@@ -210,6 +233,7 @@ curl -kfsS --connect-timeout 2 --max-time 5 https://127.0.0.1:8787/login >/dev/n
 import hashlib
 import hmac
 import json
+import os
 import ssl
 import time
 import urllib.request
@@ -257,9 +281,17 @@ if not isinstance(status.get('exits'),list):
 if not isinstance(agents.get('agents'),list):
     raise RuntimeError('/api/agents contract failed')
 failover=json.loads(Path('/etc/tp27/failover-v2.json').read_text(encoding='utf-8'))
-if failover.get('enabled') is not False:
-    raise RuntimeError('Failover V2 must default to disabled')
-print(f"INSTALL_SMOKE=OK EXITS={len(status['exits'])} AGENTS={len(agents['agents'])} FAILOVER_V2=disabled")
+failover_enabled=failover.get('enabled')
+if not isinstance(failover_enabled, bool):
+    raise RuntimeError('Failover V2 enabled must be boolean')
+created=os.environ.get('TP27_FAILOVER_CONFIG_CREATED') == '1'
+if created and failover_enabled is not False:
+    raise RuntimeError('New Failover V2 config must default to disabled')
+origin='created' if created else 'preserved'
+print(
+    f"INSTALL_SMOKE=OK EXITS={len(status['exits'])} AGENTS={len(agents['agents'])} "
+    f"FAILOVER_V2_ENABLED={str(failover_enabled).lower()} FAILOVER_CONFIG={origin}"
+)
 PY
 
 while IFS= read -r unit; do
@@ -274,6 +306,7 @@ echo "PANEL=active"
 echo "BENCHMARK=$(systemctl is-active tp27-benchmark.service 2>/dev/null || true)"
 echo "FAILOVER_V2=$(systemctl is-active tp27-failover-v2.service 2>/dev/null || true)"
 echo "FAILOVER_V2_ENABLED=$(python3 -c 'import json; print(str(bool(json.load(open("/etc/tp27/failover-v2.json")).get("enabled"))).lower())' 2>/dev/null || echo unknown)"
+echo "FAILOVER_V2_RESTART=$FAILOVER_RESTART_STATE"
 echo "VERSION=$(cat /etc/tp27/panel-version 2>/dev/null || echo unknown)"
 echo "DATA_PLANES=verified-untouched"
 echo "===== TP27 MANAGED UPDATE COMPLETE ====="
