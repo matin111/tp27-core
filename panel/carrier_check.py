@@ -65,6 +65,10 @@ fi
 kv IP_FORWARD "$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo unknown)"
 kv RP_FILTER_ALL "$(sysctl -n net.ipv4.conf.all.rp_filter 2>/dev/null || echo unknown)"
 kv RP_FILTER_DEFAULT "$(sysctl -n net.ipv4.conf.default.rp_filter 2>/dev/null || echo unknown)"
+kv ACCEPT_LOCAL_ALL "$(sysctl -n net.ipv4.conf.all.accept_local 2>/dev/null || echo unknown)"
+kv ACCEPT_LOCAL_DEFAULT "$(sysctl -n net.ipv4.conf.default.accept_local 2>/dev/null || echo unknown)"
+kv SRC_VALID_MARK "$(sysctl -n net.ipv4.conf.all.src_valid_mark 2>/dev/null || echo unknown)"
+kv LOG_MARTIANS "$(sysctl -n net.ipv4.conf.all.log_martians 2>/dev/null || echo unknown)"
 
 default_line="$(ip route show default 2>/dev/null | head -n1)"
 kv DEFAULT_ROUTE "$default_line"
@@ -101,8 +105,23 @@ else
   kv VIRT unknown
 fi
 
+if [ -r /sys/class/dmi/id/sys_vendor ]; then
+  kv SYS_VENDOR "$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || true)"
+else
+  kv SYS_VENDOR unknown
+fi
+if [ -r /sys/class/dmi/id/product_name ]; then
+  kv PRODUCT_NAME "$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)"
+else
+  kv PRODUCT_NAME unknown
+fi
+if [ -d /etc/netplan ]; then kv NETPLAN yes; else kv NETPLAN no; fi
+if command -v networkctl >/dev/null 2>&1; then kv NETWORKD yes; else kv NETWORKD no; fi
+if command -v nmcli >/dev/null 2>&1; then kv NETWORKMANAGER yes; else kv NETWORKMANAGER no; fi
+
 # This deliberately does not send packets with a forged source address.
 kv FORGED_EGRESS_TEST not_run
+kv PROVIDER_SOURCE_VALIDATION unknown
 '''
 
 
@@ -148,6 +167,65 @@ def _parse_probe(text: str) -> dict[str, str]:
         if key and key not in values:
             values[key] = value.strip()
     return values
+
+
+def _spoof_readiness(values: dict[str, str], blockers: list[str], warnings: list[str]) -> dict:
+    host_raw_ready = (
+        values.get('UID') == '0'
+        and values.get('CAP_NET_RAW') == 'yes'
+        and values.get('CAP_NET_ADMIN') == 'yes'
+        and values.get('IPROUTE') == 'yes'
+        and bool(values.get('DEFAULT_ROUTE'))
+    )
+    routing_ready = (
+        values.get('IP_FORWARD') == '1'
+        and values.get('RP_FILTER_ALL') != '1'
+        and values.get('RP_FILTER_DEFAULT') != '1'
+    )
+
+    if not host_raw_ready:
+        host_status = 'blocked'
+        conclusion = 'HOST_BLOCKED'
+        title = 'میزبان برای Raw/L3 آماده نیست'
+    elif not routing_ready:
+        host_status = 'needs-config'
+        conclusion = 'HOST_NEEDS_CONFIG_PROVIDER_UNKNOWN'
+        title = 'میزبان قابلیت Raw دارد، ولی تنظیم شبکه نیاز به بازبینی دارد'
+    else:
+        host_status = 'ready'
+        conclusion = 'HOST_READY_PROVIDER_UNKNOWN'
+        title = 'Host Readiness مناسب است؛ وضعیت Provider نامشخص است'
+
+    signals = [
+        {'label': 'CAP_NET_RAW', 'value': values.get('CAP_NET_RAW', 'unknown'), 'ok': values.get('CAP_NET_RAW') == 'yes'},
+        {'label': 'CAP_NET_ADMIN', 'value': values.get('CAP_NET_ADMIN', 'unknown'), 'ok': values.get('CAP_NET_ADMIN') == 'yes'},
+        {'label': 'IPv4 Forwarding', 'value': values.get('IP_FORWARD', 'unknown'), 'ok': values.get('IP_FORWARD') == '1'},
+        {'label': 'rp_filter all', 'value': values.get('RP_FILTER_ALL', 'unknown'), 'ok': values.get('RP_FILTER_ALL') != '1'},
+        {'label': 'rp_filter default', 'value': values.get('RP_FILTER_DEFAULT', 'unknown'), 'ok': values.get('RP_FILTER_DEFAULT') != '1'},
+        {'label': 'accept_local all', 'value': values.get('ACCEPT_LOCAL_ALL', 'unknown'), 'ok': None},
+        {'label': 'src_valid_mark', 'value': values.get('SRC_VALID_MARK', 'unknown'), 'ok': None},
+        {'label': 'GRE', 'value': values.get('GRE', 'unknown'), 'ok': values.get('GRE') in {'loaded', 'available'}},
+        {'label': 'FOU', 'value': values.get('FOU', 'unknown'), 'ok': values.get('FOU') in {'loaded', 'available'}},
+    ]
+
+    return {
+        'host_status': host_status,
+        'provider_status': 'unknown',
+        'lab_validation': 'not_run',
+        'public_forged_egress_test': values.get('FORGED_EGRESS_TEST', 'not_run'),
+        'provider_source_validation': values.get('PROVIDER_SOURCE_VALIDATION', 'unknown'),
+        'conclusion': conclusion,
+        'title': title,
+        'host_raw_ready': host_raw_ready,
+        'routing_ready': routing_ready,
+        'signals': signals,
+        'blockers': blockers,
+        'warnings': warnings,
+        'explanation': (
+            'این نتیجه فقط آمادگی میزبان را از روی Linux/Kernel/Capabilities و تنظیمات محلی می‌سنجد. '
+            'فیلتر Source Validation یا Anti-Spoof شبکه دیتاسنتر از داخل VPS قطعی قابل اثبات نیست.'
+        ),
+    }
 
 
 def _capability_result(values: dict[str, str]) -> dict:
@@ -207,6 +285,8 @@ def _capability_result(values: dict[str, str]) -> dict:
         {'key': 'firewall', 'label': 'Firewall tooling', 'ok': values.get('FIREWALL') in {'nft', 'iptables'}, 'value': values.get('FIREWALL', 'unknown')},
     ]
 
+    spoof_readiness = _spoof_readiness(values, blockers, warnings)
+
     return {
         'level': level,
         'title': title,
@@ -215,16 +295,24 @@ def _capability_result(values: dict[str, str]) -> dict:
         'blockers': blockers,
         'warnings': warnings,
         'checks': checks,
+        'spoof_readiness': spoof_readiness,
         'server': {
             'hostname': values.get('HOSTNAME') or None,
             'os': values.get('OS') or None,
             'kernel': values.get('KERNEL') or None,
             'virtualization': values.get('VIRT') or None,
+            'system_vendor': values.get('SYS_VENDOR') or None,
+            'product_name': values.get('PRODUCT_NAME') or None,
             'default_interface': values.get('DEFAULT_IFACE') or None,
             'mtu': values.get('MTU') or None,
             'rp_filter_all': values.get('RP_FILTER_ALL') or None,
             'rp_filter_default': values.get('RP_FILTER_DEFAULT') or None,
+            'accept_local_all': values.get('ACCEPT_LOCAL_ALL') or None,
+            'src_valid_mark': values.get('SRC_VALID_MARK') or None,
             'wireguard': values.get('WIREGUARD') or None,
+            'netplan': values.get('NETPLAN') or None,
+            'networkd': values.get('NETWORKD') or None,
+            'networkmanager': values.get('NETWORKMANAGER') or None,
         },
         'provider_egress': {
             'status': 'unknown',
@@ -291,7 +379,7 @@ _CHECKER_PAGE = r'''<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>بررسی سازگاری سرور · TP27</title>
+<title>Spoof Readiness · TP27</title>
 <style>
 :root{color-scheme:dark;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
 *{box-sizing:border-box}
@@ -301,41 +389,26 @@ body{margin:0;background:#090910;color:#f5f2ff}
 .top{display:flex;align-items:center;justify-content:space-between;gap:12px}
 h1{margin:18px 0 8px;font-size:30px}
 h2{margin:0 0 14px}
-p{line-height:1.8}
-.muted{color:#aaa4be}
+p{line-height:1.8}.muted{color:#aaa4be}
 .notice{background:#10101a;border:1px solid #36304f;border-radius:14px;padding:12px 14px;color:#c7c0da}
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 label{display:grid;gap:7px;color:#bbb4cf;font-size:13px}
 input,textarea,button{font:inherit;border-radius:12px;border:1px solid #40395d;background:#0f0f18;color:#fff;padding:12px}
-textarea{min-height:120px;resize:vertical}
-button{cursor:pointer}
-.primary{background:#7c5cff;border-color:#7c5cff;font-weight:800}
-.primary:disabled{opacity:.55;cursor:wait}
-a{color:#bdaeff}
-.result-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
-.score{font-size:34px;font-weight:900}
-.badge{padding:7px 11px;border-radius:999px;font-size:12px;font-weight:800}
-.ready{background:#173627;color:#7ff0ad}
-.needs-config{background:#3b3016;color:#ffd77a}
-.limited{background:#401f26;color:#ff9a9a}
-.checks{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:16px}
-.check{border:1px solid #302c45;border-radius:14px;padding:13px;background:#101019}
-.ok{color:#7de9aa}.fail{color:#ff9393}
-.lists{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}
-ul{margin:8px 0;padding-right:22px;line-height:1.8}
-.meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px}
-.meta div{background:#101019;border:1px solid #302c45;border-radius:12px;padding:10px}
-.hidden{display:none}
+textarea{min-height:120px;resize:vertical}button{cursor:pointer}.primary{background:#7c5cff;border-color:#7c5cff;font-weight:800}.primary:disabled{opacity:.55;cursor:wait}a{color:#bdaeff}
+.result-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.score{font-size:34px;font-weight:900}.badge{padding:7px 11px;border-radius:999px;font-size:12px;font-weight:800}
+.ready{background:#173627;color:#7ff0ad}.needs-config{background:#3b3016;color:#ffd77a}.limited,.blocked{background:#401f26;color:#ff9a9a}.unknown{background:#25243a;color:#c8bfff}
+.checks{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:16px}.check{border:1px solid #302c45;border-radius:14px;padding:13px;background:#101019}.ok{color:#7de9aa}.fail{color:#ff9393}.neutral{color:#c7c0da}
+.lists{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}ul{margin:8px 0;padding-right:22px;line-height:1.8}.meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px}.meta div{background:#101019;border:1px solid #302c45;border-radius:12px;padding:10px}.spoof-box{border:1px solid #514a75;background:#11111d;border-radius:18px;padding:18px;margin-top:16px}.spoof-head{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}.pill-row{display:flex;gap:8px;flex-wrap:wrap}.hidden{display:none}
 @media(max-width:760px){.grid,.checks,.lists,.meta{grid-template-columns:1fr}.wrap{margin:8px auto;padding:10px}h1{font-size:24px}}
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="card">
-    <div class="top"><a href="/">← پنل اصلی</a><span class="muted">TP27 Server Compatibility</span></div>
-    <h1>بررسی سازگاری سرور برای Carrier / Raw Networking</h1>
-    <p class="muted">IP و دسترسی SSH سرور را بده. TP27 فقط بررسی‌های read-only انجام می‌دهد و هیچ پکیج، Route، Firewall یا سرویس را تغییر نمی‌دهد.</p>
-    <div class="notice">این بررسی قابلیت‌های خود Linux و Kernel را می‌سنجد. برای تشخیص عبور Source Address جعلی از شبکه دیتاسنتر، تست فعال جعل IP انجام نمی‌شود؛ آن بخش در نتیجه با وضعیت «نامشخص» نمایش داده می‌شود.</div>
+    <div class="top"><a href="/">← پنل اصلی</a><span class="muted">TP27 Spoof Readiness</span></div>
+    <h1>بررسی آمادگی سرور برای Raw/L3 و Spoof Readiness</h1>
+    <p class="muted">IP و دسترسی SSH سرور را بده. TP27 فقط بررسی‌های read-only انجام می‌دهد و هیچ پکیج، Route، Firewall، Interface، Sysctl یا Service را تغییر نمی‌دهد.</p>
+    <div class="notice">نتیجه به‌صورت جداگانه Host Readiness و Provider Status را نشان می‌دهد. تست واقعی ارسال Packet با Source جعلی روی اینترنت عمومی اجرا نمی‌شود؛ بنابراین Provider Source Validation تا زمانی که مدرک مستقل یا Lab کنترل‌شده وجود نداشته باشد «نامشخص» باقی می‌ماند.</div>
     <div class="grid" style="margin-top:16px">
       <label>IP عمومی سرور<input id="host" placeholder="203.0.113.10" autocomplete="off"></label>
       <label>پورت SSH<input id="port" type="number" value="22" min="1" max="65535"></label>
@@ -344,78 +417,32 @@ ul{margin:8px 0;padding-right:22px;line-height:1.8}
     </div>
     <label style="margin-top:12px">Private Key اختیاری<textarea id="private_key" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label>
     <p class="muted">Credential فقط برای همین درخواست استفاده می‌شود و در فایل تنظیمات Checker ذخیره نمی‌شود.</p>
-    <button id="run" class="primary">بررسی سرور</button>
+    <button id="run" class="primary">بررسی Spoof Readiness</button>
     <span id="status" class="muted" style="margin-right:10px">آماده</span>
   </div>
-
   <div id="result" class="card hidden"></div>
 </div>
-
 <script>
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-
-function detailText(v){
-  if(Array.isArray(v)) return v.map(x=>detailText(x)).join(' | ');
-  if(v && typeof v==='object') return v.msg || v.detail || JSON.stringify(v);
-  return String(v ?? 'خطای نامشخص');
-}
-
-async function api(url, options={}){
-  const r=await fetch(url,{credentials:'same-origin',headers:{'Content-Type':'application/json'},...options});
-  const t=r.headers.get('content-type')||'';
-  const b=t.includes('json')?await r.json():{detail:await r.text()};
-  if(!r.ok) throw new Error(detailText(b.detail || b.error || b));
-  return b;
-}
-
+function detailText(v){if(Array.isArray(v))return v.map(x=>detailText(x)).join(' | ');if(v&&typeof v==='object')return v.msg||v.detail||JSON.stringify(v);return String(v??'خطای نامشخص')}
+async function api(url,options={}){const r=await fetch(url,{credentials:'same-origin',headers:{'Content-Type':'application/json'},...options});const t=r.headers.get('content-type')||'';const b=t.includes('json')?await r.json():{detail:await r.text()};if(!r.ok)throw new Error(detailText(b.detail||b.error||b));return b}
+function stateClass(v){return v==='ready'?'ready':v==='needs-config'?'needs-config':v==='blocked'?'blocked':'unknown'}
 function render(d){
-  const checks=(d.checks||[]).map(x=>`<div class="check"><b>${esc(x.label)}</b><div class="${x.ok?'ok':'fail'}">${x.ok?'✓ مناسب':'✕ نیاز به بررسی'}</div><div class="muted">${esc(x.value)}</div></div>`).join('');
-  const blockers=(d.blockers||[]).length?`<ul>${d.blockers.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:'<div class="muted">موردی نیست</div>';
-  const warnings=(d.warnings||[]).length?`<ul>${d.warnings.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:'<div class="muted">موردی نیست</div>';
-  const s=d.server||{};
-  $('result').innerHTML=`
-    <div class="result-head">
-      <div><span class="badge ${esc(d.level)}">${esc(d.title)}</span><h2 style="margin-top:12px">${esc(d.summary)}</h2></div>
-      <div class="score">${esc(d.score)}%</div>
-    </div>
-    <div class="checks">${checks}</div>
-    <div class="lists">
-      <div><h3>موانع</h3>${blockers}</div>
-      <div><h3>هشدارها</h3>${warnings}</div>
-    </div>
-    <div class="meta">
-      <div><b>Hostname</b><br><span class="muted">${esc(s.hostname||'-')}</span></div>
-      <div><b>OS / Kernel</b><br><span class="muted">${esc(s.os||'-')} · ${esc(s.kernel||'-')}</span></div>
-      <div><b>Default Interface / MTU</b><br><span class="muted">${esc(s.default_interface||'-')} · ${esc(s.mtu||'-')}</span></div>
-      <div><b>Virtualization</b><br><span class="muted">${esc(s.virtualization||'-')}</span></div>
-    </div>
-    <div class="notice" style="margin-top:14px"><b>${esc(d.provider_egress?.label||'Provider Egress')}</b><br>${esc(d.provider_egress?.detail||'')}</div>`;
-  $('result').classList.remove('hidden');
+ const checks=(d.checks||[]).map(x=>`<div class="check"><b>${esc(x.label)}</b><div class="${x.ok?'ok':'fail'}">${x.ok?'✓ مناسب':'✕ نیاز به بررسی'}</div><div class="muted">${esc(x.value)}</div></div>`).join('');
+ const blockers=(d.blockers||[]).length?`<ul>${d.blockers.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:'<div class="muted">موردی نیست</div>';
+ const warnings=(d.warnings||[]).length?`<ul>${d.warnings.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:'<div class="muted">موردی نیست</div>';
+ const s=d.server||{},sp=d.spoof_readiness||{};
+ const signals=(sp.signals||[]).map(x=>`<div class="check"><b>${esc(x.label)}</b><div class="${x.ok===true?'ok':x.ok===false?'fail':'neutral'}">${x.ok===true?'✓':x.ok===false?'✕':'•'} ${esc(x.value)}</div></div>`).join('');
+ $('result').innerHTML=`
+ <div class="result-head"><div><span class="badge ${esc(d.level)}">${esc(d.title)}</span><h2 style="margin-top:12px">${esc(d.summary)}</h2></div><div class="score">${esc(d.score)}%</div></div>
+ <div class="spoof-box"><div class="spoof-head"><div><h2>Spoof Readiness</h2><div>${esc(sp.title||'-')}</div></div><div class="pill-row"><span class="badge ${stateClass(sp.host_status)}">HOST: ${esc(sp.host_status||'unknown')}</span><span class="badge unknown">PROVIDER: ${esc(sp.provider_status||'unknown')}</span><span class="badge unknown">FORGED EGRESS: ${esc(sp.public_forged_egress_test||'not_run')}</span></div></div><p class="muted">${esc(sp.explanation||'')}</p><div class="notice"><b>نتیجه:</b> ${esc(sp.conclusion||'-')}<br><b>Lab validation:</b> ${esc(sp.lab_validation||'not_run')} · <b>Provider source validation:</b> ${esc(sp.provider_source_validation||'unknown')}</div><div class="checks">${signals}</div></div>
+ <div class="checks">${checks}</div><div class="lists"><div><h3>موانع</h3>${blockers}</div><div><h3>هشدارها</h3>${warnings}</div></div>
+ <div class="meta"><div><b>Hostname</b><br><span class="muted">${esc(s.hostname||'-')}</span></div><div><b>OS / Kernel</b><br><span class="muted">${esc(s.os||'-')} · ${esc(s.kernel||'-')}</span></div><div><b>Default Interface / MTU</b><br><span class="muted">${esc(s.default_interface||'-')} · ${esc(s.mtu||'-')}</span></div><div><b>Virtualization / Vendor</b><br><span class="muted">${esc(s.virtualization||'-')} · ${esc(s.system_vendor||'-')} · ${esc(s.product_name||'-')}</span></div></div>
+ <div class="notice" style="margin-top:14px"><b>${esc(d.provider_egress?.label||'Provider Egress')}</b><br>${esc(d.provider_egress?.detail||'')}</div>`;
+ $('result').classList.remove('hidden');
 }
-
-$('run').onclick=async()=>{
-  const btn=$('run');
-  btn.disabled=true;
-  $('status').textContent='در حال بررسی SSH و قابلیت‌های سرور...';
-  $('result').classList.add('hidden');
-  try{
-    const body={
-      host:$('host').value.trim(),
-      port:Number($('port').value||22),
-      username:$('username').value.trim()||'root',
-      password:$('password').value||null,
-      private_key:$('private_key').value.trim()||null
-    };
-    const d=await api('/api/server-compatibility-check',{method:'POST',body:JSON.stringify(body)});
-    render(d);
-    $('status').textContent='بررسی کامل شد';
-  }catch(e){
-    $('status').textContent='خطا: '+e.message;
-  }finally{
-    btn.disabled=false;
-  }
-};
+$('run').onclick=async()=>{const btn=$('run');btn.disabled=true;$('status').textContent='در حال بررسی SSH، Kernel و Raw/L3 readiness...';$('result').classList.add('hidden');try{const body={host:$('host').value.trim(),port:Number($('port').value||22),username:$('username').value.trim()||'root',password:$('password').value||null,private_key:$('private_key').value.trim()||null};const d=await api('/api/server-compatibility-check',{method:'POST',body:JSON.stringify(body)});render(d);$('status').textContent='بررسی کامل شد'}catch(e){$('status').textContent='خطا: '+e.message}finally{btn.disabled=false}};
 </script>
 </body>
 </html>'''
