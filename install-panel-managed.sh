@@ -34,7 +34,7 @@ export DEBIAN_FRONTEND=noninteractive
 wait_for_apt
 apt-get update -qq
 wait_for_apt
-apt-get install -y -qq curl ca-certificates iperf3 util-linux >/dev/null
+apt-get install -y -qq curl ca-certificates iperf3 util-linux iproute2 wireguard-tools >/dev/null
 
 install -d -m 755 "$PANEL" "$STATIC" /usr/local/lib/tp27
 install -d -m 700 /etc/tp27 /var/lib/tp27 /var/lib/tp27-panel-updater /var/backups/tp27-panel /var/log/tp27/panel-jobs
@@ -76,7 +76,8 @@ for f in app.py auth.py provision.py provision_password.py provision_agent.py ag
   fetch "panel/$f" "$PANEL/$f"
 done
 fetch panel/provision_resilient.py "$PANEL/provision_resilient.py"
-fetch panel/provision_multicore.py "$PANEL/provision_gre.py"
+fetch panel/provision_multicore.py "$PANEL/provision_multicore.py"
+fetch panel/provision_ipv6.py "$PANEL/provision_gre.py"
 
 for f in index.html login.html style.css first-paint.css app.js fast-ui.js agent-manage.js premium.css v9.css premium-ui.js runtime-refresh-fix.js benchmark-ui.js benchmark-auto.js server-speed-ui.js speed-recovery-fix.js safe-switch-ui.js self-update.js ui-stability.js; do
   fetch "panel/static/$f" "$STATIC/$f"
@@ -184,7 +185,7 @@ PY
 "$PANEL/venv/bin/python" -m py_compile \
   "$PANEL/app.py" "$PANEL/auth.py" "$PANEL/provision.py" \
   "$PANEL/provision_password.py" "$PANEL/provision_agent.py" \
-  "$PANEL/provision_resilient.py" "$PANEL/provision_gre.py" \
+  "$PANEL/provision_resilient.py" "$PANEL/provision_multicore.py" "$PANEL/provision_gre.py" \
   "$PANEL/agent_control.py" "$PANEL/plain_control.py" \
   "$PANEL/ports.py" "$PANEL/portplan.py" "$PANEL/self_update.py" \
   "$PANEL/safe_switch.py" "$PANEL/safe_switch_router.py" \

@@ -25,10 +25,15 @@ PY
 )"
 
 IPT="$(command -v iptables || true)"
+IP6T="$(command -v ip6tables || true)"
 GRE_LOCAL_PUBLIC=""
 GRE_REMOTE_PUBLIC=""
 GRE_KEY=""
 FOU_PORT="0"
+V6_LOCAL_PUBLIC=""
+V6_REMOTE_PUBLIC=""
+WG_LISTEN_PORT="0"
+WG_REMOTE_PORT="0"
 SOCAT_PID=""
 
 ensure_chain_hook() {
@@ -51,6 +56,29 @@ remove_rule() {
   [[ -n "$IPT" ]] || return 0
   while "$IPT" -w 5 -t "$table" -C "$chain" "$@" 2>/dev/null; do
     "$IPT" -w 5 -t "$table" -D "$chain" "$@" 2>/dev/null || break
+  done
+}
+
+ensure_v6_chain_hook() {
+  local table="$1" parent="$2" chain="$3"
+  [[ -n "$IP6T" ]] || return 0
+  "$IP6T" -w 5 -t "$table" -N "$chain" 2>/dev/null || true
+  "$IP6T" -w 5 -t "$table" -C "$parent" -j "$chain" 2>/dev/null || \
+    "$IP6T" -w 5 -t "$table" -I "$parent" 1 -j "$chain"
+}
+
+ensure_v6_rule() {
+  local table="$1" chain="$2"; shift 2
+  [[ -n "$IP6T" ]] || return 0
+  "$IP6T" -w 5 -t "$table" -C "$chain" "$@" 2>/dev/null || \
+    "$IP6T" -w 5 -t "$table" -A "$chain" "$@"
+}
+
+remove_v6_rule() {
+  local table="$1" chain="$2"; shift 2
+  [[ -n "$IP6T" ]] || return 0
+  while "$IP6T" -w 5 -t "$table" -C "$chain" "$@" 2>/dev/null; do
+    "$IP6T" -w 5 -t "$table" -D "$chain" "$@" 2>/dev/null || break
   done
 }
 
@@ -96,10 +124,41 @@ cleanup_gre_underlay_firewall() {
   fi
 }
 
+setup_ipv6_underlay_firewall() {
+  [[ -n "$IP6T" && -n "$V6_LOCAL_PUBLIC" && -n "$V6_REMOTE_PUBLIC" ]] || return 0
+  ensure_v6_chain_hook filter INPUT TP27_V6_IN
+  ensure_v6_chain_hook filter OUTPUT TP27_V6_OUT
+  if [[ "$TRANSPORT" == "wireguard-v6" ]]; then
+    if [[ "$WG_LISTEN_PORT" -gt 0 ]]; then
+      ensure_v6_rule filter TP27_V6_IN -p udp -s "$V6_REMOTE_PUBLIC/128" -d "$V6_LOCAL_PUBLIC/128" --dport "$WG_LISTEN_PORT" -j ACCEPT
+    fi
+    if [[ "$WG_REMOTE_PORT" -gt 0 ]]; then
+      ensure_v6_rule filter TP27_V6_OUT -p udp -s "$V6_LOCAL_PUBLIC/128" -d "$V6_REMOTE_PUBLIC/128" --dport "$WG_REMOTE_PORT" -j ACCEPT
+      ensure_v6_rule filter TP27_V6_IN -p udp -s "$V6_REMOTE_PUBLIC/128" -d "$V6_LOCAL_PUBLIC/128" --sport "$WG_REMOTE_PORT" -j ACCEPT
+    fi
+  else
+    ensure_v6_rule filter TP27_V6_IN -p 47 -s "$V6_REMOTE_PUBLIC/128" -d "$V6_LOCAL_PUBLIC/128" -j ACCEPT
+    ensure_v6_rule filter TP27_V6_OUT -p 47 -s "$V6_LOCAL_PUBLIC/128" -d "$V6_REMOTE_PUBLIC/128" -j ACCEPT
+  fi
+}
+
+cleanup_ipv6_underlay_firewall() {
+  [[ -n "$IP6T" && -n "$V6_LOCAL_PUBLIC" && -n "$V6_REMOTE_PUBLIC" ]] || return 0
+  if [[ "$TRANSPORT" == "wireguard-v6" ]]; then
+    if [[ "$WG_LISTEN_PORT" -gt 0 ]]; then
+      remove_v6_rule filter TP27_V6_IN -p udp -s "$V6_REMOTE_PUBLIC/128" -d "$V6_LOCAL_PUBLIC/128" --dport "$WG_LISTEN_PORT" -j ACCEPT
+    fi
+    if [[ "$WG_REMOTE_PORT" -gt 0 ]]; then
+      remove_v6_rule filter TP27_V6_OUT -p udp -s "$V6_LOCAL_PUBLIC/128" -d "$V6_REMOTE_PUBLIC/128" --dport "$WG_REMOTE_PORT" -j ACCEPT
+      remove_v6_rule filter TP27_V6_IN -p udp -s "$V6_REMOTE_PUBLIC/128" -d "$V6_LOCAL_PUBLIC/128" --sport "$WG_REMOTE_PORT" -j ACCEPT
+    fi
+  else
+    remove_v6_rule filter TP27_V6_IN -p 47 -s "$V6_REMOTE_PUBLIC/128" -d "$V6_LOCAL_PUBLIC/128" -j ACCEPT
+    remove_v6_rule filter TP27_V6_OUT -p 47 -s "$V6_LOCAL_PUBLIC/128" -d "$V6_REMOTE_PUBLIC/128" -j ACCEPT
+  fi
+}
+
 cleanup_fou() {
-  # FOU listeners are global kernel registrations and may be shared by multiple
-  # TP27 links. Deleting a port while one link stops can break another live
-  # tunnel, so keep registrations and reuse them on subsequent starts.
   return 0
 }
 
@@ -108,6 +167,7 @@ ip link del "$IFACE" 2>/dev/null || true
 cleanup(){
   local rc=$?
   [[ -n "${SOCAT_PID:-}" ]] && kill "$SOCAT_PID" 2>/dev/null || true
+  cleanup_ipv6_underlay_firewall || true
   cleanup_gre_underlay_firewall || true
   cleanup_tun_firewall || true
   ip link del "$IFACE" 2>/dev/null || true
@@ -121,6 +181,108 @@ setup_common_interface() {
   setup_tun_firewall
 }
 
+run_kernel_keepalive() {
+  local label="$1" interval="$2" failures="$3"
+  local fail_count=0 last_rx rx_now ping_ok
+  last_rx="$(cat "/sys/class/net/${IFACE}/statistics/rx_bytes" 2>/dev/null || echo 0)"
+  while true; do
+    sleep "$interval"
+    if ! ip link show "$IFACE" >/dev/null 2>&1; then
+      echo "TP27_${label}_SELFHEAL iface=$IFACE reason=interface-missing action=restart" >&2
+      exit 75
+    fi
+    rx_now="$(cat "/sys/class/net/${IFACE}/statistics/rx_bytes" 2>/dev/null || echo 0)"
+    ping_ok=0
+    if [[ -n "${PEER_IP:-}" ]] && ping -I "$IFACE" -c 2 -i 0.2 -W 1 "$PEER_IP" >/dev/null 2>&1; then
+      ping_ok=1
+    fi
+    if [[ "$ping_ok" -eq 1 || "$rx_now" -gt "$last_rx" ]]; then
+      fail_count=0
+    else
+      fail_count=$((fail_count + 1))
+      if [[ "$fail_count" -le "$failures" ]]; then
+        echo "TP27_${label}_KEEPALIVE_FAIL iface=$IFACE peer=${PEER_IP:-none} failure=$fail_count/$failures rx=$rx_now" >&2
+      fi
+      [[ "$fail_count" -gt "$failures" ]] && fail_count="$failures"
+    fi
+    last_rx="$rx_now"
+  done
+}
+
+if [[ "$ROLE" == "ip6gre-iran" || "$ROLE" == "ip6gre-exit" ]]; then
+  V6_LOCAL_PUBLIC="$(jq -r '.local_public_v6' "$CFG")"
+  V6_REMOTE_PUBLIC="$(jq -r '.remote_public_v6' "$CFG")"
+  GRE_KEY="$(jq -r '.gre_key' "$CFG")"
+  TXQLEN="$(jq -r '.txqueuelen // 2000' "$CFG")"
+  KEEPALIVE_INTERVAL="$(jq -r '.keepalive_interval // 4' "$CFG")"
+  KEEPALIVE_FAILURES="$(jq -r '.keepalive_failures // 4' "$CFG")"
+
+  python3 - "$V6_LOCAL_PUBLIC" "$V6_REMOTE_PUBLIC" "$GRE_KEY" "$MTU" <<'PY'
+import ipaddress, sys
+local=ipaddress.ip_address(sys.argv[1]); remote=ipaddress.ip_address(sys.argv[2])
+if local.version != 6 or remote.version != 6 or not local.is_global or not remote.is_global:
+    raise SystemExit('IP6GRE requires global IPv6 endpoints')
+key=int(sys.argv[3]); mtu=int(sys.argv[4])
+if not 1 <= key <= 4294967295: raise SystemExit('invalid GRE key')
+if not 1000 <= mtu <= 1448: raise SystemExit('invalid IP6GRE MTU')
+PY
+
+  command -v modprobe >/dev/null 2>&1 && modprobe ip6_gre 2>/dev/null || true
+  setup_ipv6_underlay_firewall
+  ip link add "$IFACE" type ip6gre \
+    local "$V6_LOCAL_PUBLIC" remote "$V6_REMOTE_PUBLIC" \
+    key "$GRE_KEY" hoplimit 64
+  ip link set dev "$IFACE" mtu "$MTU" txqueuelen "$TXQLEN"
+  ip addr add "$ADDR" dev "$IFACE"
+  ip link set dev "$IFACE" up
+  setup_common_interface
+
+  echo "TP27_IP6GRE_READY role=$ROLE iface=$IFACE underlay=$V6_LOCAL_PUBLIC->$V6_REMOTE_PUBLIC addr=$ADDR peer=$PEER_IP mtu=$MTU key=$GRE_KEY" >&2
+  ip -br -4 addr show dev "$IFACE" >&2 || true
+  ip -6 tunnel show "$IFACE" >&2 || true
+  run_kernel_keepalive IP6GRE "$KEEPALIVE_INTERVAL" "$KEEPALIVE_FAILURES"
+fi
+
+if [[ "$ROLE" == "wireguard-v6-iran" || "$ROLE" == "wireguard-v6-exit" ]]; then
+  V6_LOCAL_PUBLIC="$(jq -r '.local_public_v6' "$CFG")"
+  V6_REMOTE_PUBLIC="$(jq -r '.remote_public_v6' "$CFG")"
+  WG_PRIVATE="$(jq -r '.wg_private_key_file' "$CFG")"
+  WG_PEER_KEY="$(jq -r '.wg_peer_public_key' "$CFG")"
+  WG_LISTEN_PORT="$(jq -r '.listen_port // 0' "$CFG")"
+  WG_REMOTE_PORT="$(jq -r '.remote_port // 0' "$CFG")"
+  WG_KEEPALIVE="$(jq -r '.persistent_keepalive // 15' "$CFG")"
+  TXQLEN="$(jq -r '.txqueuelen // 2000' "$CFG")"
+
+  [[ -s "$WG_PRIVATE" ]] || { echo "WireGuard private key missing" >&2; exit 5; }
+  command -v wg >/dev/null 2>&1 || { echo "wg binary missing" >&2; exit 5; }
+  command -v modprobe >/dev/null 2>&1 && modprobe wireguard 2>/dev/null || true
+  setup_ipv6_underlay_firewall
+
+  ip link add "$IFACE" type wireguard
+  if [[ "$WG_LISTEN_PORT" -gt 0 ]]; then
+    wg set "$IFACE" private-key "$WG_PRIVATE" listen-port "$WG_LISTEN_PORT"
+  else
+    wg set "$IFACE" private-key "$WG_PRIVATE"
+  fi
+  if [[ "$ROLE" == "wireguard-v6-iran" ]]; then
+    [[ "$WG_REMOTE_PORT" -gt 0 ]] || { echo "invalid WireGuard remote port" >&2; exit 5; }
+    wg set "$IFACE" peer "$WG_PEER_KEY" \
+      allowed-ips "${PEER_IP}/32" \
+      endpoint "[${V6_REMOTE_PUBLIC}]:${WG_REMOTE_PORT}" \
+      persistent-keepalive "$WG_KEEPALIVE"
+  else
+    wg set "$IFACE" peer "$WG_PEER_KEY" allowed-ips "${PEER_IP}/32"
+  fi
+  ip link set dev "$IFACE" mtu "$MTU" txqueuelen "$TXQLEN"
+  ip addr add "$ADDR" dev "$IFACE"
+  ip link set dev "$IFACE" up
+  setup_common_interface
+
+  echo "TP27_WGV6_READY role=$ROLE iface=$IFACE underlay=$V6_LOCAL_PUBLIC->$V6_REMOTE_PUBLIC addr=$ADDR peer=$PEER_IP mtu=$MTU listen=$WG_LISTEN_PORT remote_port=$WG_REMOTE_PORT" >&2
+  wg show "$IFACE" >&2 || true
+  run_kernel_keepalive WGV6 4 5
+fi
+
 if [[ "$ROLE" == "gre-iran" || "$ROLE" == "gre-exit" ]]; then
   GRE_LOCAL_PUBLIC="$(jq -r '.local_public' "$CFG")"
   GRE_REMOTE_PUBLIC="$(jq -r '.remote_public' "$CFG")"
@@ -132,23 +294,13 @@ if [[ "$ROLE" == "gre-iran" || "$ROLE" == "gre-exit" ]]; then
 
   python3 - "$GRE_LOCAL_PUBLIC" "$GRE_REMOTE_PUBLIC" "$GRE_KEY" "$KEEPALIVE_INTERVAL" "$KEEPALIVE_FAILURES" "$TRANSPORT" "$FOU_PORT" <<'PY'
 import ipaddress, sys
-ipaddress.ip_address(sys.argv[1])
-ipaddress.ip_address(sys.argv[2])
-key=int(sys.argv[3])
-interval=int(sys.argv[4])
-failures=int(sys.argv[5])
-transport=sys.argv[6]
-fou_port=int(sys.argv[7])
-if key < 1 or key > 4294967295:
-    raise SystemExit('invalid GRE key')
-if interval < 2 or interval > 60:
-    raise SystemExit('invalid GRE keepalive interval')
-if failures < 3 or failures > 20:
-    raise SystemExit('invalid GRE keepalive failure threshold')
-if transport not in {'gre', 'gre-fou'}:
-    raise SystemExit('invalid GRE transport')
-if transport == 'gre-fou' and not (fou_port == 443 or 1024 <= fou_port <= 65535):
-    raise SystemExit('invalid FOU port')
+ipaddress.ip_address(sys.argv[1]); ipaddress.ip_address(sys.argv[2])
+key=int(sys.argv[3]); interval=int(sys.argv[4]); failures=int(sys.argv[5]); transport=sys.argv[6]; fou_port=int(sys.argv[7])
+if key < 1 or key > 4294967295: raise SystemExit('invalid GRE key')
+if interval < 2 or interval > 60: raise SystemExit('invalid GRE keepalive interval')
+if failures < 3 or failures > 20: raise SystemExit('invalid GRE keepalive failure threshold')
+if transport not in {'gre', 'gre-fou'}: raise SystemExit('invalid GRE transport')
+if transport == 'gre-fou' and not (fou_port == 443 or 1024 <= fou_port <= 65535): raise SystemExit('invalid FOU port')
 PY
 
   command -v modprobe >/dev/null 2>&1 && modprobe ip_gre 2>/dev/null || true
@@ -163,7 +315,6 @@ PY
   fi
 
   setup_gre_underlay_firewall
-
   if [[ "$TRANSPORT" == "gre-fou" ]]; then
     ip link add "$IFACE" type gre \
       local "$GRE_LOCAL_PUBLIC" remote "$GRE_REMOTE_PUBLIC" \
@@ -185,42 +336,7 @@ PY
   ip -br -4 addr show dev "$IFACE" >&2 || true
   ip -4 route show dev "$IFACE" >&2 || true
   ip -s link show dev "$IFACE" >&2 || true
-
-  FAIL_COUNT=0
-  LAST_RX="$(cat "/sys/class/net/${IFACE}/statistics/rx_bytes" 2>/dev/null || echo 0)"
-
-  while true; do
-    sleep "$KEEPALIVE_INTERVAL"
-
-    if ! ip link show "$IFACE" >/dev/null 2>&1; then
-      echo "TP27_GRE_SELFHEAL iface=$IFACE reason=interface-missing action=restart" >&2
-      exit 75
-    fi
-
-    RX_NOW="$(cat "/sys/class/net/${IFACE}/statistics/rx_bytes" 2>/dev/null || echo 0)"
-    PING_OK=0
-    if [[ -n "${PEER_IP:-}" ]] && ping -I "$IFACE" -c 2 -i 0.2 -W 1 "$PEER_IP" >/dev/null 2>&1; then
-      PING_OK=1
-    fi
-
-    if [[ "$PING_OK" -eq 1 || "$RX_NOW" -gt "$LAST_RX" ]]; then
-      if [[ "$FAIL_COUNT" -gt 0 ]]; then
-        echo "TP27_GRE_RECOVERED iface=$IFACE failures=$FAIL_COUNT rx=$RX_NOW" >&2
-      fi
-      FAIL_COUNT=0
-    else
-      FAIL_COUNT=$((FAIL_COUNT + 1))
-      if [[ "$FAIL_COUNT" -lt "$KEEPALIVE_FAILURES" ]]; then
-        echo "TP27_GRE_KEEPALIVE_FAIL iface=$IFACE peer=${PEER_IP:-none} failure=$FAIL_COUNT/$KEEPALIVE_FAILURES rx=$RX_NOW" >&2
-      elif [[ "$FAIL_COUNT" -eq "$KEEPALIVE_FAILURES" ]]; then
-        echo "TP27_GRE_DEGRADED iface=$IFACE peer=${PEER_IP:-none} failures=$FAIL_COUNT action=hold-interface" >&2
-      else
-        FAIL_COUNT="$KEEPALIVE_FAILURES"
-      fi
-    fi
-
-    LAST_RX="$RX_NOW"
-  done
+  run_kernel_keepalive GRE "$KEEPALIVE_INTERVAL" "$KEEPALIVE_FAILURES"
 fi
 
 TUN_SPEC="TUN,tun-name=${IFACE},tun-type=tun,iff-no-pi"
@@ -231,43 +347,31 @@ case "$ROLE" in
     CERT="$(jq -r '.cert' "$CFG")"
     KEY="$(jq -r '.key' "$CFG")"
     CLIENT_CA="$(jq -r '.client_ca' "$CFG")"
-    socat -d -d \
-      "$TUN_SPEC" \
-      "OPENSSL-LISTEN:${PORT},reuseaddr,keepalive,nodelay,cert=${CERT},key=${KEY},cafile=${CLIENT_CA},verify=1" &
+    socat -d -d "$TUN_SPEC" "OPENSSL-LISTEN:${PORT},reuseaddr,keepalive,nodelay,cert=${CERT},key=${KEY},cafile=${CLIENT_CA},verify=1" &
     ;;
-
   iran)
     ENDPOINT="$(jq -r '.endpoint' "$CFG")"
     PORT="$(jq -r '.listen_port' "$CFG")"
     CAFILE="$(jq -r '.ca_file' "$CFG")"
     CERT="$(jq -r '.cert' "$CFG")"
     KEY="$(jq -r '.key' "$CFG")"
-    socat -d -d \
-      "$TUN_SPEC" \
-      "OPENSSL:${ENDPOINT}:${PORT},keepalive,nodelay,cafile=${CAFILE},cert=${CERT},key=${KEY},verify=1,commonname=${ENDPOINT}" &
+    socat -d -d "$TUN_SPEC" "OPENSSL:${ENDPOINT}:${PORT},keepalive,nodelay,cafile=${CAFILE},cert=${CERT},key=${KEY},verify=1,commonname=${ENDPOINT}" &
     ;;
-
   iran-listen)
     PORT="$(jq -r '.listen_port' "$CFG")"
     CERT="$(jq -r '.cert' "$CFG")"
     KEY="$(jq -r '.key' "$CFG")"
     CLIENT_CA="$(jq -r '.client_ca' "$CFG")"
-    socat -d -d \
-      "$TUN_SPEC" \
-      "OPENSSL-LISTEN:${PORT},reuseaddr,keepalive,nodelay,cert=${CERT},key=${KEY},cafile=${CLIENT_CA},verify=1" &
+    socat -d -d "$TUN_SPEC" "OPENSSL-LISTEN:${PORT},reuseaddr,keepalive,nodelay,cert=${CERT},key=${KEY},cafile=${CLIENT_CA},verify=1" &
     ;;
-
   exit-connect)
     ENDPOINT="$(jq -r '.endpoint' "$CFG")"
     PORT="$(jq -r '.listen_port' "$CFG")"
     CAFILE="$(jq -r '.ca_file' "$CFG")"
     CERT="$(jq -r '.cert' "$CFG")"
     KEY="$(jq -r '.key' "$CFG")"
-    socat -d -d \
-      "$TUN_SPEC" \
-      "OPENSSL:${ENDPOINT}:${PORT},keepalive,nodelay,cafile=${CAFILE},cert=${CERT},key=${KEY},verify=1,commonname=${ENDPOINT}" &
+    socat -d -d "$TUN_SPEC" "OPENSSL:${ENDPOINT}:${PORT},keepalive,nodelay,cafile=${CAFILE},cert=${CERT},key=${KEY},verify=1,commonname=${ENDPOINT}" &
     ;;
-
   *)
     echo "invalid role=$ROLE" >&2
     exit 2
@@ -280,22 +384,18 @@ for _ in $(seq 1 80); do
   if ip link show "$IFACE" >/dev/null 2>&1; then
     ip link set dev "$IFACE" mtu "$MTU"
     ip addr flush dev "$IFACE" scope global 2>/dev/null || true
-
     if [[ "$PREFIX" == "30" && -n "$PEER_IP" ]]; then
       ip addr add "${LOCAL_IP}/32" peer "${PEER_IP}/32" dev "$IFACE"
       ip route replace "${PEER_IP}/32" dev "$IFACE" src "$LOCAL_IP"
     else
       ip addr add "$ADDR" dev "$IFACE"
     fi
-
     ip link set dev "$IFACE" up
     setup_common_interface
     READY=1
     break
   fi
-  if ! kill -0 "$SOCAT_PID" 2>/dev/null; then
-    break
-  fi
+  if ! kill -0 "$SOCAT_PID" 2>/dev/null; then break; fi
   sleep 0.1
 done
 
