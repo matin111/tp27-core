@@ -121,7 +121,6 @@ from pydantic import BaseModel, Field
 
 import agent_control
 from auth import session_ok
-from provision import run
 
 _EXTERNAL_MONITOR_FILE = Path('/etc/tp27/external-carriers.json')
 _EXTERNAL_ID_RE = re.compile(r'[A-Za-z0-9_-]{1,32}')
@@ -183,6 +182,10 @@ def _external_validate(body: ExternalCarrierMonitorInput):
 
 
 def _external_status(row):
+    # Import lazily to avoid the provision -> portplan -> provision cycle during
+    # panel startup. By request time provision.py has completed initialization.
+    from provision import run
+
     iface = str(row.get('interface') or '')
     service = str(row.get('service') or '')
     peer_ip = str(row.get('peer_ip') or '')
