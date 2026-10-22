@@ -23,10 +23,12 @@ from ports import (
     reconcile as reconcile_ports, set_l2tp, state as port_state,
 )
 from portplan import apply_plan, validate_plan
+from carrier_check import router as carrier_check_router
 
 BASE = Path(__file__).resolve().parent
 app = FastAPI(title='TP27 Control Panel', docs_url=None, redoc_url=None)
 app.mount('/static', StaticFiles(directory=BASE / 'static'), name='static')
+app.include_router(carrier_check_router)
 app.include_router(agent_router)
 
 BUILD_TASKS = {}
