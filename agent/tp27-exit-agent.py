@@ -14,7 +14,7 @@ from pathlib import Path
 
 import requests
 
-VERSION = '1.5.1'
+VERSION = '1.8.0'
 RAW = os.environ.get('TP27_REPO_RAW', 'https://raw.githubusercontent.com/matin111/tp27-core/main')
 ROOT = Path('/etc/tp27')
 CONFIG = ROOT / 'exit-agent.json'
@@ -28,6 +28,7 @@ AGENT_FILE = Path('/opt/tp27-exit-agent/tp27-exit-agent.py')
 PLAIN_AGENT_FILE = Path('/opt/tp27-exit-agent/tp27-exit-agent-plain.py')
 AGENT_UNIT = Path('/etc/systemd/system/tp27-exit-agent.service')
 PLAIN_AGENT_UNIT = Path('/etc/systemd/system/tp27-exit-agent-plain.service')
+IPV6_PROBE_TARGET = '2606:4700:4700::1111'
 
 
 def atomic_json(path: Path, data, mode=0o600):
@@ -103,25 +104,25 @@ def _as_ipv4(value):
         return ''
 
 
+def _as_global_ipv6(value):
+    try:
+        addr = ipaddress.ip_address(str(value or '').strip().split('%', 1)[0])
+        return str(addr) if addr.version == 6 and addr.is_global else ''
+    except Exception:
+        return ''
+
+
 def public_ip():
-    # TP27 data-plane provisioning is IPv4-first today.  Do not let a
-    # dual-stack host register an IPv6 address merely because the HTTP
-    # resolver preferred AAAA.  Probe the public address explicitly over
-    # IPv4, validate it, then fall back to the kernel IPv4 route source.
     if shutil_which('curl'):
         for url in ('https://ifconfig.me/ip', 'https://api.ipify.org'):
             try:
-                rc, out, _ = run(
-                    ['curl', '-4', '-fsS', '--max-time', '8', url],
-                    timeout=10, check=False,
-                )
+                rc, out, _ = run(['curl', '-4', '-fsS', '--max-time', '8', url], timeout=10, check=False)
                 if rc == 0:
                     addr = _as_ipv4(out)
                     if addr:
                         return addr
             except Exception:
                 pass
-
     try:
         _, out, _ = run(['ip', '-4', 'route', 'get', '1.1.1.1'], timeout=5)
         m = re.search(r'\bsrc\s+(\d+\.\d+\.\d+\.\d+)', out)
@@ -130,9 +131,6 @@ def public_ip():
             return addr
     except Exception:
         pass
-
-    # Last fallback for minimal systems without curl.  Validate the result
-    # so an IPv6 response can never be stored as the exit's public IPv4.
     for url in ('https://ifconfig.me/ip', 'https://api.ipify.org'):
         try:
             r = requests.get(url, timeout=8)
@@ -142,6 +140,29 @@ def public_ip():
                 return addr
         except Exception:
             pass
+    return ''
+
+
+def public_ipv6():
+    try:
+        rc, out, _ = run(['ip', '-6', 'route', 'get', IPV6_PROBE_TARGET], timeout=6, check=False)
+        if rc == 0:
+            m = re.search(r'\bsrc\s+([^\s]+)', out or '')
+            addr = _as_global_ipv6(m.group(1) if m else '')
+            if addr:
+                return addr
+    except Exception:
+        pass
+    if shutil_which('curl'):
+        for url in ('https://ifconfig.me/ip', 'https://api64.ipify.org'):
+            try:
+                rc, out, _ = run(['curl', '-6', '-fsS', '--max-time', '8', url], timeout=10, check=False)
+                if rc == 0:
+                    addr = _as_global_ipv6(out)
+                    if addr:
+                        return addr
+            except Exception:
+                pass
     return ''
 
 
@@ -223,6 +244,13 @@ def _ipv4(value, name):
     return str(addr)
 
 
+def _ipv6(value, name):
+    addr = ipaddress.ip_address(str(value or '').strip().split('%', 1)[0])
+    if addr.version != 6 or not addr.is_global:
+        raise ValueError(f'{name} must be global IPv6')
+    return str(addr)
+
+
 def _iface(eid):
     return ('t27' + re.sub(r'[^a-z0-9]', '', eid.lower()))[:15]
 
@@ -255,23 +283,97 @@ def _port_free(bind_ip, port):
         s.close()
 
 
+def _udp6_port_free(bind_ip, port):
+    s = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+    try:
+        s.bind((bind_ip, int(port), 0, 0))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def _ensure_wireguard_tools():
+    if shutil_which('wg'):
+        return
+    env = dict(os.environ)
+    env['DEBIAN_FRONTEND'] = 'noninteractive'
+    for cmd in (['apt-get', 'update', '-qq'], ['apt-get', 'install', '-y', '-qq', 'wireguard-tools']):
+        p = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=240, env=env)
+        if p.returncode != 0:
+            raise RuntimeError('نصب wireguard-tools ناموفق بود: ' + (p.stderr or p.stdout or 'apt failed')[-1200:])
+    if not shutil_which('wg'):
+        raise RuntimeError('wg بعد از نصب پیدا نشد')
+
+
+def _wg_keypair():
+    rc, private, err = run(['wg', 'genkey'], timeout=10, check=False)
+    if rc != 0 or not private:
+        raise RuntimeError(err or 'wg genkey failed')
+    p = subprocess.run(['wg', 'pubkey'], input=private.strip() + '\n', text=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+    public = (p.stdout or '').strip()
+    if p.returncode != 0 or not public:
+        raise RuntimeError((p.stderr or 'wg pubkey failed').strip())
+    return private.strip(), public
+
+
+def _valid_wg_public(value):
+    value = str(value or '').strip()
+    if not re.fullmatch(r'[A-Za-z0-9+/]{43}=', value):
+        raise ValueError('invalid WireGuard public key')
+    return value
+
+
 def _cert_pin(cert_path):
     pem = cert_path.read_text(encoding='utf-8')
     der = ssl.PEM_cert_to_DER_cert(pem)
     return hashlib.sha256(der).hexdigest()
 
 
-def action_status(_args):
+def action_status(args):
     rc, out, err = run(['tp27', 'status'], timeout=20, check=False)
     _, addr, _ = run(['ip', '-br', 'addr'], timeout=10, check=False)
     _, links, _ = run(['systemctl', '--no-pager', '--no-legend', '--plain', 'list-units', 'tp27-link@*.service', 'tp27-framed@*.service'], timeout=10, check=False)
-    return {
+    result = {
         'tp27_rc': rc,
         'tp27': out or err,
         'addresses': addr[:12000],
         'links': links[:12000],
         'agent_version': VERSION,
     }
+    if (args or {}).get('ipv6_preflight_v1'):
+        v6 = public_ipv6()
+        iran_v6 = ''
+        try:
+            iran_v6 = _ipv6((args or {}).get('iran_public_ipv6'), 'iran_public_ipv6')
+        except Exception:
+            pass
+        route_ok = bool(v6)
+        ping_ok = False
+        ping_text = ''
+        if v6 and iran_v6:
+            prc, pout, perr = run(['ping', '-6', '-c', '2', '-W', '1', iran_v6], timeout=6, check=False)
+            ping_ok = prc == 0
+            ping_text = (pout or perr or '')[-1200:]
+        modprobe = shutil_which('modprobe')
+        ip6gre_supported = Path('/sys/module/ip6_gre').exists()
+        if not ip6gre_supported and modprobe:
+            mrc, _, _ = run([modprobe, '-n', 'ip6_gre'], timeout=5, check=False)
+            ip6gre_supported = mrc == 0
+        wireguard_possible = bool(shutil_which('wg') or shutil_which('apt-get'))
+        result['ipv6_preflight_v1'] = {
+            'api': 1,
+            'public_ipv6': v6,
+            'route_ok': route_ok,
+            'ping6_to_iran': ping_ok,
+            'ping6_text': ping_text,
+            'ip6gre_supported': bool(ip6gre_supported),
+            'wireguard_possible': bool(wireguard_possible),
+            'wireguard_installed': bool(shutil_which('wg')),
+        }
+    return result
 
 
 def action_provision_exit(args):
@@ -346,7 +448,85 @@ def action_provision_reverse_exit(args):
             'route_state': route_out, 'agent_version': VERSION}
 
 
+def _action_provision_ipv6_exit(args, transport):
+    eid = safe_id(str(args.get('id', '')))
+    ensure_runtime()
+    iran_v6 = _ipv6(args.get('iran_public_ipv6'), 'iran_public_ipv6')
+    exit_v6 = _ipv6(args.get('exit_public_ipv6') or public_ipv6(), 'exit_public_ipv6')
+    tunnel_ip = str(args.get('tunnel_ip', '')).strip()
+    peer_ip = _ipv4(args.get('peer_ip'), 'peer_ip')
+    iface_addr = ipaddress.ip_interface(tunnel_ip)
+    if iface_addr.version != 4:
+        raise ValueError('tunnel_ip must be IPv4')
+    mtu = int(args.get('mtu', 1420 if transport == 'ip6gre' else 1380))
+    if not 1000 <= mtu <= 1448:
+        raise ValueError('IPv6 carrier MTU must be between 1000 and 1448')
+
+    EXITS.mkdir(parents=True, exist_ok=True)
+    CERTS.mkdir(parents=True, exist_ok=True)
+    _stop_exit_services(eid)
+    iface = _iface(eid)
+
+    cfg = {
+        'id': eid, 'interface': iface, 'tunnel_ip': tunnel_ip, 'peer_ip': peer_ip,
+        'local_public_v6': exit_v6, 'remote_public_v6': iran_v6,
+        'mtu': mtu, 'txqueuelen': int(args.get('txqueuelen', 2000)),
+        'transport': transport,
+    }
+    result_extra = {}
+    if transport == 'ip6gre':
+        gre_key = int(args.get('gre_key', 0))
+        if not 1 <= gre_key <= 4294967295:
+            raise ValueError('invalid GRE key')
+        cfg.update({
+            'role': 'ip6gre-exit', 'mode': 'ip6gre', 'gre_key': gre_key,
+            'keepalive_interval': 4, 'keepalive_failures': 4,
+        })
+        result_extra['gre_key'] = gre_key
+    else:
+        _ensure_wireguard_tools()
+        port = int(args.get('listen_port') or 51820)
+        if not 1 <= port <= 65535:
+            raise ValueError('invalid WireGuard listen port')
+        if not _udp6_port_free(exit_v6, port):
+            raise RuntimeError(f'UDP/{port} روی IPv6 سرور خارج اشغال است')
+        peer_public = _valid_wg_public(args.get('peer_public_key'))
+        private, public = _wg_keypair()
+        key_path = CERTS / (eid + '-wgv6.key')
+        atomic_text(key_path, private, 0o600)
+        cfg.update({
+            'role': 'wireguard-v6-exit', 'mode': 'wireguard-v6',
+            'wg_private_key_file': str(key_path), 'wg_peer_public_key': peer_public,
+            'listen_port': port, 'remote_port': 0, 'persistent_keepalive': 0,
+        })
+        result_extra.update({'wg_public_key': public, 'listen_port': port})
+
+    atomic_json(EXITS / (eid + '.json'), cfg)
+    run(['systemctl', 'enable', 'tp27-link@' + eid + '.service'], timeout=20, check=False)
+    rc, out, err = run(['systemctl', 'restart', 'tp27-link@' + eid + '.service'], timeout=40, check=False)
+    if rc != 0:
+        raise RuntimeError(err or out or f'{transport} exit link start failed')
+    time.sleep(1.2)
+    active = subprocess.run(['systemctl', 'is-active', '--quiet', 'tp27-link@' + eid + '.service']).returncode == 0
+    ping_rc, ping_out, ping_err = run(['ping', '-I', iface, '-c', '2', '-W', '2', peer_ip], timeout=8, check=False)
+    _, addr_out, _ = run(['ip', '-br', '-4', 'addr', 'show', 'dev', iface], timeout=10, check=False)
+    _, route_out, _ = run(['ip', '-4', 'route', 'show', 'dev', iface], timeout=10, check=False)
+    _, link_out, _ = run(['ip', '-s', 'link', 'show', 'dev', iface], timeout=10, check=False)
+    return {
+        'id': eid, 'mode': transport, 'transport': transport,
+        'service_active': active, 'health_ping': ping_rc == 0,
+        'ping_output': ping_out or ping_err, 'interface': iface,
+        'interface_state': addr_out, 'route_state': route_out, 'link_state': link_out,
+        'tunnel_ip': tunnel_ip, 'peer_ip': peer_ip, 'public_ipv6': exit_v6,
+        'agent_version': VERSION, **result_extra,
+    }
+
+
 def action_provision_gre_exit(args):
+    transport = str(args.get('transport') or 'gre').strip().lower()
+    if transport in {'ip6gre', 'wireguard-v6'}:
+        return _action_provision_ipv6_exit(args, transport)
+
     eid = safe_id(str(args.get('id', '')))
     ensure_runtime()
     iran_public = _ipv4(args.get('iran_public'), 'iran_public')
@@ -362,7 +542,6 @@ def action_provision_gre_exit(args):
     gre_key = int(args.get('gre_key', 0))
     if not 1 <= gre_key <= 4294967295:
         raise ValueError('invalid GRE key')
-    transport = str(args.get('transport') or 'gre').strip().lower()
     if transport not in {'gre', 'gre-fou'}:
         raise ValueError('invalid GRE transport')
     fou_port = int(args.get('fou_port') or 0)
@@ -479,7 +658,7 @@ def action_delete_exit(args):
     patterns = [
         eid + '.crt', eid + '.key', eid + '-iran.crt', eid + '-iran.key',
         eid + '-reverse-ca.crt', eid + '-reverse-client.crt', eid + '-reverse-client.key',
-        eid + '-framed.crt', eid + '-framed.key',
+        eid + '-framed.crt', eid + '-framed.key', eid + '-wgv6.key',
     ]
     for name in patterns:
         path = CERTS / name
