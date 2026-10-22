@@ -22,6 +22,7 @@ def test_checker_is_read_only_and_does_not_run_forged_egress_probe():
     text = (PANEL / 'carrier_check.py').read_text(encoding='utf-8')
 
     assert 'FORGED_EGRESS_TEST not_run' in text
+    assert 'PROVIDER_SOURCE_VALIDATION unknown' in text
     assert 'ip.is_global' in text
     assert "'read_only': True" in text
     assert 'ip link add' not in text
@@ -45,6 +46,10 @@ def test_checker_scores_host_capabilities_without_claiming_provider_egress():
         'IP_FORWARD': '1',
         'RP_FILTER_ALL': '0',
         'RP_FILTER_DEFAULT': '0',
+        'ACCEPT_LOCAL_ALL': '0',
+        'ACCEPT_LOCAL_DEFAULT': '0',
+        'SRC_VALID_MARK': '0',
+        'LOG_MARTIANS': '0',
         'FIREWALL': 'nft',
         'GRE': 'available',
         'FOU': 'available',
@@ -53,6 +58,13 @@ def test_checker_scores_host_capabilities_without_claiming_provider_egress():
         'OS': 'Ubuntu',
         'KERNEL': '6.8.0',
         'VIRT': 'kvm',
+        'SYS_VENDOR': 'QEMU',
+        'PRODUCT_NAME': 'KVM',
+        'NETPLAN': 'yes',
+        'NETWORKD': 'yes',
+        'NETWORKMANAGER': 'no',
+        'FORGED_EGRESS_TEST': 'not_run',
+        'PROVIDER_SOURCE_VALIDATION': 'unknown',
     })
 
     assert report['level'] == 'ready'
@@ -60,3 +72,39 @@ def test_checker_scores_host_capabilities_without_claiming_provider_egress():
     assert report['blockers'] == []
     assert report['provider_egress']['status'] == 'unknown'
     assert report['read_only'] is True
+
+    spoof = report['spoof_readiness']
+    assert spoof['host_status'] == 'ready'
+    assert spoof['provider_status'] == 'unknown'
+    assert spoof['public_forged_egress_test'] == 'not_run'
+    assert spoof['provider_source_validation'] == 'unknown'
+    assert spoof['conclusion'] == 'HOST_READY_PROVIDER_UNKNOWN'
+
+
+def test_spoof_readiness_distinguishes_host_config_from_provider_status():
+    module = load_module()
+    report = module._capability_result({
+        'UID': '0',
+        'TUN': 'yes',
+        'IPROUTE': 'yes',
+        'CAP_NET_ADMIN': 'yes',
+        'CAP_NET_RAW': 'yes',
+        'DEFAULT_ROUTE': 'default via 192.0.2.1 dev eth0',
+        'DEFAULT_IFACE': 'eth0',
+        'MTU': '1500',
+        'IP_FORWARD': '0',
+        'RP_FILTER_ALL': '1',
+        'RP_FILTER_DEFAULT': '1',
+        'FIREWALL': 'nft',
+        'GRE': 'available',
+        'FOU': 'available',
+        'WIREGUARD': 'available',
+        'FORGED_EGRESS_TEST': 'not_run',
+        'PROVIDER_SOURCE_VALIDATION': 'unknown',
+    })
+
+    spoof = report['spoof_readiness']
+    assert spoof['host_status'] == 'needs-config'
+    assert spoof['provider_status'] == 'unknown'
+    assert spoof['routing_ready'] is False
+    assert spoof['conclusion'] == 'HOST_NEEDS_CONFIG_PROVIDER_UNKNOWN'
