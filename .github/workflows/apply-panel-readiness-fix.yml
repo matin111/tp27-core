@@ -1,0 +1,42 @@
+name: Apply managed panel readiness fix
+
+on:
+  push:
+    branches: [fix/sit6in4-panel-import-smoke]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Patch installer readiness gate
+        run: python3 tools/apply_panel_readiness_fix.py
+      - name: Validate generated change
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n install-panel-managed.sh
+          python -m compileall -q panel tests
+          git diff --check
+          grep -q 'PRE_RESTART_APP_IMPORT=OK' install-panel-managed.sh
+          grep -q 'PANEL_READY=OK' install-panel-managed.sh
+          grep -q 'journalctl -u tp27-panel.service' install-panel-managed.sh
+      - name: Commit installer fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm tools/apply_panel_readiness_fix.py
+          git add install-panel-managed.sh
+          git commit -m 'fix(updater): wait for panel readiness before rollback'
+          git push origin HEAD:fix/sit6in4-panel-import-smoke
