@@ -18,8 +18,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install pytest
-        run: python3 -m pip install -q pytest
+      - name: Install panel test dependencies
+        run: |
+          python3 -m pip install -q -r panel/requirements.txt
+          python3 -m pip install -q pytest
       - name: Apply hardening
         run: python3 tools/sit_hardening_once.py
       - name: Validate source and contracts
