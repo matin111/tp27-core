@@ -6,7 +6,7 @@ SRC = (ROOT / 'agent' / 'tp27-exit-agent-plain.py').read_text(encoding='utf-8')
 
 
 def test_fast_agent_generation_and_poll_default():
-    assert "SPEED_AGENT_VERSION = '1.7.0'" in SRC
+    assert "SPEED_AGENT_VERSION = '1.9.0'" in SRC
     assert "TP27_AGENT_POLL_SECONDS', '0.5'" in SRC
 
 

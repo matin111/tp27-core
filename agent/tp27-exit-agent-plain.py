@@ -17,7 +17,7 @@ from pathlib import Path
 import requests
 
 PLAIN_VERSION = '1.5.0'
-SPEED_AGENT_VERSION = '1.7.0'
+SPEED_AGENT_VERSION = '1.9.0'
 POLL_SECONDS = max(0.5, min(float(os.environ.get('TP27_AGENT_POLL_SECONDS', '0.5') or 0.5), 5.0))
 REMOTE_GRE_READY_DEADLINE = 3.0
 REMOTE_GRE_READY_POLL = 0.05
@@ -81,6 +81,9 @@ def _fast_stop_exit_services(eid):
     BASE.run(['systemctl', 'disable', '--now', *services], timeout=25, check=False)
     BASE.run(['systemctl', 'reset-failed', *services], timeout=15, check=False)
     BASE.run(['ip', 'link', 'del', BASE._iface(eid)], timeout=10, check=False)
+    sit_iface = BASE._sit_iface(eid) if hasattr(BASE, '_sit_iface') else ''
+    if sit_iface:
+        BASE.run(['ip', 'link', 'del', sit_iface], timeout=10, check=False)
 
 
 def _fast_action_provision_gre_exit(args):
