@@ -72,4 +72,7 @@ jobs:
           grep -q "or 'stable'" panel/self_update.py
           grep -q 'verify_panel_smoke()' bin/tp27-panel-self-update
           grep -q 'INSTALL_SMOKE=OK' install-panel-managed.sh
+          grep -q 'PRE_RESTART_APP_IMPORT=OK' install-panel-managed.sh
+          grep -q 'PANEL_READY=OK' install-panel-managed.sh
+          grep -q 'journalctl -u tp27-panel.service' install-panel-managed.sh
           grep -q 'DATA_PLANES=verified-untouched' install-panel-managed.sh
