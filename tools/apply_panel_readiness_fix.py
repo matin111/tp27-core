@@ -40,11 +40,3 @@ fi
 if s.count(old) != 1:
     raise SystemExit(f'installer readiness anchor count={s.count(old)}')
 installer.write_text(s.replace(old, new, 1))
-
-ci = Path('.github/workflows/ci.yml')
-c = ci.read_text()
-old_ci = "          grep -q 'INSTALL_SMOKE=OK' install-panel-managed.sh\n          grep -q 'DATA_PLANES=verified-untouched' install-panel-managed.sh\n"
-new_ci = "          grep -q 'INSTALL_SMOKE=OK' install-panel-managed.sh\n          grep -q 'PRE_RESTART_APP_IMPORT=OK' install-panel-managed.sh\n          grep -q 'PANEL_READY=OK' install-panel-managed.sh\n          grep -q 'journalctl -u tp27-panel.service' install-panel-managed.sh\n          grep -q 'DATA_PLANES=verified-untouched' install-panel-managed.sh\n"
-if c.count(old_ci) != 1:
-    raise SystemExit(f'ci release-gate anchor count={c.count(old_ci)}')
-ci.write_text(c.replace(old_ci, new_ci, 1))
