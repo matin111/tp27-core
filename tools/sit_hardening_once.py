@@ -49,7 +49,7 @@ def test_minimal_host_probe_and_plain_cleanup_are_fail_safe():
     assert 'return False' in panel[panel.index('def _module_supported'):panel.index('def local_public_ipv6')]
     assert "BASE._sit_iface(eid) if hasattr(BASE, '_sit_iface') else ''" in plain
     assert "BASE.run(['ip', 'link', 'del', sit_iface]" in plain
-""" + '\n'
-    p.write_text(s, encoding='utf-8')
+"""
+    p.write_text(s.rstrip() + '\n', encoding='utf-8')
 
 print('SIT_HARDENING=OK')
