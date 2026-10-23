@@ -17,7 +17,7 @@ from pathlib import Path
 import requests
 
 PLAIN_VERSION = '1.5.0'
-SPEED_AGENT_VERSION = '1.7.0'
+SPEED_AGENT_VERSION = '1.9.0'
 POLL_SECONDS = max(0.5, min(float(os.environ.get('TP27_AGENT_POLL_SECONDS', '0.5') or 0.5), 5.0))
 REMOTE_GRE_READY_DEADLINE = 3.0
 REMOTE_GRE_READY_POLL = 0.05

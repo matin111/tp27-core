@@ -34,6 +34,12 @@ V6_LOCAL_PUBLIC=""
 V6_REMOTE_PUBLIC=""
 WG_LISTEN_PORT="0"
 WG_REMOTE_PORT="0"
+SIT_IFACE=""
+SIT_LOCAL_PUBLIC=""
+SIT_REMOTE_PUBLIC=""
+SIT_LOCAL_V6=""
+SIT_REMOTE_V6=""
+SIT_MTU="1480"
 SOCAT_PID=""
 
 ensure_chain_hook() {
@@ -113,6 +119,20 @@ setup_gre_underlay_firewall() {
   fi
 }
 
+setup_sit_underlay_firewall() {
+  [[ -n "$IPT" && -n "$SIT_LOCAL_PUBLIC" && -n "$SIT_REMOTE_PUBLIC" ]] || return 0
+  ensure_chain_hook filter INPUT TP27_SIT_IN
+  ensure_chain_hook filter OUTPUT TP27_SIT_OUT
+  ensure_rule filter TP27_SIT_IN -p 41 -s "$SIT_REMOTE_PUBLIC/32" -d "$SIT_LOCAL_PUBLIC/32" -j ACCEPT
+  ensure_rule filter TP27_SIT_OUT -p 41 -s "$SIT_LOCAL_PUBLIC/32" -d "$SIT_REMOTE_PUBLIC/32" -j ACCEPT
+}
+
+cleanup_sit_underlay_firewall() {
+  [[ -n "$IPT" && -n "$SIT_LOCAL_PUBLIC" && -n "$SIT_REMOTE_PUBLIC" ]] || return 0
+  remove_rule filter TP27_SIT_IN -p 41 -s "$SIT_REMOTE_PUBLIC/32" -d "$SIT_LOCAL_PUBLIC/32" -j ACCEPT
+  remove_rule filter TP27_SIT_OUT -p 41 -s "$SIT_LOCAL_PUBLIC/32" -d "$SIT_REMOTE_PUBLIC/32" -j ACCEPT
+}
+
 cleanup_gre_underlay_firewall() {
   [[ -n "$IPT" && -n "$GRE_LOCAL_PUBLIC" && -n "$GRE_REMOTE_PUBLIC" ]] || return 0
   if [[ "$TRANSPORT" == "gre-fou" ]]; then
@@ -168,9 +188,11 @@ cleanup(){
   local rc=$?
   [[ -n "${SOCAT_PID:-}" ]] && kill "$SOCAT_PID" 2>/dev/null || true
   cleanup_ipv6_underlay_firewall || true
+  cleanup_sit_underlay_firewall || true
   cleanup_gre_underlay_firewall || true
   cleanup_tun_firewall || true
   ip link del "$IFACE" 2>/dev/null || true
+  [[ -n "${SIT_IFACE:-}" ]] && ip link del "$SIT_IFACE" 2>/dev/null || true
   cleanup_fou || true
   exit "$rc"
 }
@@ -208,6 +230,57 @@ run_kernel_keepalive() {
     last_rx="$rx_now"
   done
 }
+
+if [[ "$ROLE" == "sit-ip6gre-iran" || "$ROLE" == "sit-ip6gre-exit" ]]; then
+  SIT_IFACE="$(jq -r '.sit_interface' "$CFG")"
+  SIT_LOCAL_PUBLIC="$(jq -r '.local_public' "$CFG")"
+  SIT_REMOTE_PUBLIC="$(jq -r '.remote_public' "$CFG")"
+  SIT_LOCAL_V6="$(jq -r '.sit_local_v6' "$CFG")"
+  SIT_REMOTE_V6="$(jq -r '.sit_remote_v6' "$CFG")"
+  SIT_MTU="$(jq -r '.sit_mtu // 1480' "$CFG")"
+  GRE_KEY="$(jq -r '.gre_key' "$CFG")"
+  TXQLEN="$(jq -r '.txqueuelen // 2000' "$CFG")"
+  KEEPALIVE_INTERVAL="$(jq -r '.keepalive_interval // 4' "$CFG")"
+  KEEPALIVE_FAILURES="$(jq -r '.keepalive_failures // 4' "$CFG")"
+  V6_LOCAL_PUBLIC="$SIT_LOCAL_V6"
+  V6_REMOTE_PUBLIC="$SIT_REMOTE_V6"
+
+  python3 - "$SIT_LOCAL_PUBLIC" "$SIT_REMOTE_PUBLIC" "$SIT_LOCAL_V6" "$SIT_REMOTE_V6" "$GRE_KEY" "$SIT_MTU" "$MTU" <<'PY'
+import ipaddress, sys
+l4=ipaddress.ip_address(sys.argv[1]); r4=ipaddress.ip_address(sys.argv[2])
+l6=ipaddress.ip_address(sys.argv[3]); r6=ipaddress.ip_address(sys.argv[4])
+if l4.version != 4 or r4.version != 4: raise SystemExit('SIT requires IPv4 endpoints')
+ula=ipaddress.ip_network('fd00::/8')
+if l6.version != 6 or r6.version != 6 or l6 not in ula or r6 not in ula: raise SystemExit('SIT requires ULA IPv6 endpoints')
+if ipaddress.ip_network(str(l6) + '/127', strict=False) != ipaddress.ip_network(str(r6) + '/127', strict=False): raise SystemExit('SIT endpoints must share /127')
+key=int(sys.argv[5]); sit_mtu=int(sys.argv[6]); mtu=int(sys.argv[7])
+if not 1 <= key <= 4294967295: raise SystemExit('invalid GRE key')
+if not 1280 <= sit_mtu <= 1480: raise SystemExit('invalid SIT MTU')
+if not 1000 <= mtu <= 1432: raise SystemExit('invalid SIT/IP6GRE MTU')
+PY
+
+  command -v modprobe >/dev/null 2>&1 && modprobe sit 2>/dev/null || true
+  command -v modprobe >/dev/null 2>&1 && modprobe ip6_gre 2>/dev/null || true
+  ip link del "$SIT_IFACE" 2>/dev/null || true
+  setup_sit_underlay_firewall
+  ip tunnel add "$SIT_IFACE" mode sit local "$SIT_LOCAL_PUBLIC" remote "$SIT_REMOTE_PUBLIC" ttl 64
+  ip link set dev "$SIT_IFACE" mtu "$SIT_MTU" txqueuelen "$TXQLEN"
+  ip -6 addr add "${SIT_LOCAL_V6}/127" dev "$SIT_IFACE"
+  ip link set dev "$SIT_IFACE" up
+  ip -6 route replace "${SIT_REMOTE_V6}/128" dev "$SIT_IFACE" src "$SIT_LOCAL_V6"
+  setup_ipv6_underlay_firewall
+  ip link add "$IFACE" type ip6gre local "$SIT_LOCAL_V6" remote "$SIT_REMOTE_V6" key "$GRE_KEY" hoplimit 64
+  ip link set dev "$IFACE" mtu "$MTU" txqueuelen "$TXQLEN"
+  ip addr add "$ADDR" dev "$IFACE"
+  ip link set dev "$IFACE" up
+  setup_common_interface
+
+  echo "TP27_SIT_IP6GRE_READY role=$ROLE iface=$IFACE sit=$SIT_IFACE outer=$SIT_LOCAL_PUBLIC->$SIT_REMOTE_PUBLIC v6=$SIT_LOCAL_V6->$SIT_REMOTE_V6 addr=$ADDR peer=$PEER_IP mtu=$MTU sit_mtu=$SIT_MTU key=$GRE_KEY" >&2
+  ip -br -6 addr show dev "$SIT_IFACE" >&2 || true
+  ip -6 route show dev "$SIT_IFACE" >&2 || true
+  ip -br -4 addr show dev "$IFACE" >&2 || true
+  run_kernel_keepalive SITIP6GRE "$KEEPALIVE_INTERVAL" "$KEEPALIVE_FAILURES"
+fi
 
 if [[ "$ROLE" == "ip6gre-iran" || "$ROLE" == "ip6gre-exit" ]]; then
   V6_LOCAL_PUBLIC="$(jq -r '.local_public_v6' "$CFG")"

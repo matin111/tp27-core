@@ -14,7 +14,7 @@ from pathlib import Path
 
 import requests
 
-VERSION = '1.8.0'
+VERSION = '1.9.0'
 RAW = os.environ.get('TP27_REPO_RAW', 'https://raw.githubusercontent.com/matin111/tp27-core/main')
 ROOT = Path('/etc/tp27')
 CONFIG = ROOT / 'exit-agent.json'
@@ -255,6 +255,17 @@ def _iface(eid):
     return ('t27' + re.sub(r'[^a-z0-9]', '', eid.lower()))[:15]
 
 
+def _sit_iface(eid):
+    return ('s27' + re.sub(r'[^a-z0-9]', '', eid.lower()))[:15]
+
+
+def _ula_ipv6(value, name):
+    addr = ipaddress.ip_address(str(value or '').strip().split('%', 1)[0])
+    if addr.version != 6 or addr not in ipaddress.ip_network('fd00::/8'):
+        raise ValueError(f'{name} must be ULA IPv6')
+    return str(addr)
+
+
 def _service_for_exit(eid):
     cfg_path = EXITS / (eid + '.json')
     try:
@@ -269,6 +280,7 @@ def _stop_exit_services(eid):
         run(['systemctl', 'disable', '--now', svc], timeout=25, check=False)
         run(['systemctl', 'reset-failed', svc], timeout=15, check=False)
     run(['ip', 'link', 'del', _iface(eid)], timeout=10, check=False)
+    run(['ip', 'link', 'del', _sit_iface(eid)], timeout=10, check=False)
 
 
 def _port_free(bind_ip, port):
@@ -343,6 +355,22 @@ def action_status(args):
         'links': links[:12000],
         'agent_version': VERSION,
     }
+    if (args or {}).get('sit6in4_preflight_v1'):
+        modprobe = shutil_which('modprobe')
+        sit_supported = Path('/sys/module/sit').exists()
+        ip6gre_supported = Path('/sys/module/ip6_gre').exists()
+        if modprobe and not sit_supported:
+            src, _, _ = run([modprobe, '-n', 'sit'], timeout=5, check=False)
+            sit_supported = src == 0
+        if modprobe and not ip6gre_supported:
+            grc, _, _ = run([modprobe, '-n', 'ip6_gre'], timeout=5, check=False)
+            ip6gre_supported = grc == 0
+        result['sit6in4_preflight_v1'] = {
+            'api': 1, 'public_ipv4': public_ip(),
+            'sit_supported': bool(sit_supported),
+            'ip6gre_supported': bool(ip6gre_supported),
+            'protocol41_test': 'not_run',
+        }
     if (args or {}).get('ipv6_preflight_v1'):
         v6 = public_ipv6()
         iran_v6 = ''
@@ -448,6 +476,65 @@ def action_provision_reverse_exit(args):
             'route_state': route_out, 'agent_version': VERSION}
 
 
+def _action_provision_sit_ip6gre_exit(args):
+    eid = safe_id(str(args.get('id', '')))
+    ensure_runtime()
+    iran_public = _ipv4(args.get('iran_public'), 'iran_public')
+    exit_public = _ipv4(args.get('exit_public') or public_ip(), 'exit_public')
+    sit_local_v6 = _ula_ipv6(args.get('sit_local_v6'), 'sit_local_v6')
+    sit_remote_v6 = _ula_ipv6(args.get('sit_remote_v6'), 'sit_remote_v6')
+    if ipaddress.ip_network(sit_local_v6 + '/127', strict=False) != ipaddress.ip_network(sit_remote_v6 + '/127', strict=False):
+        raise ValueError('SIT IPv6 endpoints must share /127')
+    tunnel_ip = str(args.get('tunnel_ip', '')).strip()
+    peer_ip = _ipv4(args.get('peer_ip'), 'peer_ip')
+    iface_addr = ipaddress.ip_interface(tunnel_ip)
+    if iface_addr.version != 4:
+        raise ValueError('tunnel_ip must be IPv4')
+    mtu = int(args.get('mtu', 1400))
+    sit_mtu = int(args.get('sit_mtu', 1480))
+    if not 1000 <= mtu <= 1432:
+        raise ValueError('SIT/IP6GRE MTU must be between 1000 and 1432')
+    if not 1280 <= sit_mtu <= 1480:
+        raise ValueError('SIT MTU must be between 1280 and 1480')
+    gre_key = int(args.get('gre_key', 0))
+    if not 1 <= gre_key <= 4294967295:
+        raise ValueError('invalid GRE key')
+    EXITS.mkdir(parents=True, exist_ok=True)
+    _stop_exit_services(eid)
+    run(['ip', 'link', 'del', _sit_iface(eid)], timeout=10, check=False)
+    cfg = {
+        'role': 'sit-ip6gre-exit', 'transport': 'sit-ip6gre', 'mode': 'sit-ip6gre',
+        'id': eid, 'interface': _iface(eid), 'sit_interface': _sit_iface(eid),
+        'tunnel_ip': tunnel_ip, 'peer_ip': peer_ip,
+        'local_public': exit_public, 'remote_public': iran_public,
+        'sit_local_v6': sit_local_v6, 'sit_remote_v6': sit_remote_v6,
+        'gre_key': gre_key, 'mtu': mtu, 'sit_mtu': sit_mtu,
+        'txqueuelen': int(args.get('txqueuelen', 2000)),
+        'keepalive_interval': 4, 'keepalive_failures': 4,
+    }
+    atomic_json(EXITS / (eid + '.json'), cfg)
+    run(['systemctl', 'enable', 'tp27-link@' + eid + '.service'], timeout=20, check=False)
+    rc, out, err = run(['systemctl', 'restart', 'tp27-link@' + eid + '.service'], timeout=40, check=False)
+    if rc != 0:
+        raise RuntimeError(err or out or 'SIT/6in4 exit link start failed')
+    time.sleep(1.2)
+    active = subprocess.run(['systemctl', 'is-active', '--quiet', 'tp27-link@' + eid + '.service']).returncode == 0
+    ping_rc, ping_out, ping_err = run(['ping', '-I', _iface(eid), '-c', '2', '-W', '2', peer_ip], timeout=8, check=False)
+    _, addr_out, _ = run(['ip', '-br', '-4', 'addr', 'show', 'dev', _iface(eid)], timeout=10, check=False)
+    _, sit_out, _ = run(['ip', '-d', 'link', 'show', 'dev', _sit_iface(eid)], timeout=10, check=False)
+    _, link_out, _ = run(['ip', '-s', 'link', 'show', 'dev', _iface(eid)], timeout=10, check=False)
+    return {
+        'id': eid, 'mode': 'sit-ip6gre', 'transport': 'sit-ip6gre',
+        'service_active': active, 'health_ping': ping_rc == 0,
+        'ping_output': ping_out or ping_err, 'interface': _iface(eid),
+        'sit_interface': _sit_iface(eid), 'interface_state': addr_out,
+        'sit_state': sit_out, 'link_state': link_out, 'tunnel_ip': tunnel_ip,
+        'peer_ip': peer_ip, 'gre_key': gre_key, 'public_ipv4': exit_public,
+        'sit_local_v6': sit_local_v6, 'sit_remote_v6': sit_remote_v6,
+        'protocol41_test': 'runtime-health', 'agent_version': VERSION,
+    }
+
+
 def _action_provision_ipv6_exit(args, transport):
     eid = safe_id(str(args.get('id', '')))
     ensure_runtime()
@@ -524,6 +611,8 @@ def _action_provision_ipv6_exit(args, transport):
 
 def action_provision_gre_exit(args):
     transport = str(args.get('transport') or 'gre').strip().lower()
+    if transport == 'sit-ip6gre':
+        return _action_provision_sit_ip6gre_exit(args)
     if transport in {'ip6gre', 'wireguard-v6'}:
         return _action_provision_ipv6_exit(args, transport)
 
@@ -578,6 +667,8 @@ def action_provision_gre_exit(args):
 
 def action_provision_tls_exit(args):
     transport = str(args.get('transport') or 'framed-tls').strip().lower()
+    if transport == 'sit-ip6gre':
+        return _action_provision_sit_ip6gre_exit(args)
     if transport in {'ip6gre', 'wireguard-v6'}:
         return _action_provision_ipv6_exit(args, transport)
 
