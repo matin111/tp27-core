@@ -40,3 +40,12 @@ def test_runtime_uses_protocol41_and_nested_ip6gre_with_cleanup():
 def test_plain_agent_generation_bumped_for_capability_refresh():
     plain = (ROOT / 'agent/tp27-exit-agent-plain.py').read_text(encoding='utf-8')
     assert "SPEED_AGENT_VERSION = '1.9.0'" in plain
+
+
+def test_minimal_host_probe_and_plain_cleanup_are_fail_safe():
+    panel = (ROOT / 'panel/provision_ipv6.py').read_text(encoding='utf-8')
+    plain = (ROOT / 'agent/tp27-exit-agent-plain.py').read_text(encoding='utf-8')
+    assert "for candidate in ('/usr/sbin/modprobe', '/sbin/modprobe', '/usr/bin/modprobe', '/bin/modprobe')" in panel
+    assert 'return False' in panel[panel.index('def _module_supported'):panel.index('def local_public_ipv6')]
+    assert "BASE._sit_iface(eid) if hasattr(BASE, '_sit_iface') else ''" in plain
+    assert "BASE.run(['ip', 'link', 'del', sit_iface]" in plain

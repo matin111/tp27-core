@@ -81,6 +81,9 @@ def _fast_stop_exit_services(eid):
     BASE.run(['systemctl', 'disable', '--now', *services], timeout=25, check=False)
     BASE.run(['systemctl', 'reset-failed', *services], timeout=15, check=False)
     BASE.run(['ip', 'link', 'del', BASE._iface(eid)], timeout=10, check=False)
+    sit_iface = BASE._sit_iface(eid) if hasattr(BASE, '_sit_iface') else ''
+    if sit_iface:
+        BASE.run(['ip', 'link', 'del', sit_iface], timeout=10, check=False)
 
 
 def _fast_action_provision_gre_exit(args):

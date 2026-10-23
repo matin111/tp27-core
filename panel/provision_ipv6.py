@@ -57,10 +57,14 @@ def _sit_pair(eid: str, iran_v4: str, exit_v4: str):
 
 
 def _module_supported(name: str) -> bool:
-    if Path('/sys/module') .joinpath(name).exists():
+    if (Path('/sys/module') / name).exists():
         return True
-    rc, _, _ = run(['modprobe', '-n', name], check=False)
-    return rc == 0
+    for candidate in ('/usr/sbin/modprobe', '/sbin/modprobe', '/usr/bin/modprobe', '/bin/modprobe'):
+        if not Path(candidate).is_file():
+            continue
+        rc, _, _ = run([candidate, '-n', name], check=False)
+        return rc == 0
+    return False
 
 
 def local_public_ipv6() -> str:
