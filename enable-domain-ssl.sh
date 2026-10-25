@@ -10,22 +10,30 @@ LIVE="/etc/letsencrypt/live/$DOMAIN"
 BUNDLE="/etc/haproxy/tp27-certs/domain.pem"
 HAPROXY_CFG="/etc/haproxy/haproxy.cfg"
 BACKEND="127.0.0.1:18787"
+RELAY_HOST="${TP27_ACME_RELAY_HOST:-}"
+RELAY_USER="${TP27_ACME_RELAY_USER:-tp27-acme}"
+SSH_KEY="${TP27_ACME_SSH_KEY:-}"
+ACME_HOST="${TP27_ACME_HOST:-acme-v02.api.letsencrypt.org}"
+ACME_LOCAL="${TP27_ACME_LOCAL:-127.0.0.2}"
 
 [[ "$EUID" -eq 0 ]] || { echo "ERROR: run as root" >&2; exit 1; }
 [[ -n "$DOMAIN" && -n "$IP" ]] || {
-  echo "Usage: $0 <domain> <controller-ip> [--domain-only]" >&2
+  echo "Usage: TP27_ACME_RELAY_HOST=<relay-ip> TP27_ACME_SSH_KEY=<private-key> $0 <domain> <controller-ip> [--domain-only]" >&2
   exit 2
 }
+[[ -n "$RELAY_HOST" ]] || { echo "ERROR: TP27_ACME_RELAY_HOST is required" >&2; exit 2; }
+[[ -n "$SSH_KEY" && -r "$SSH_KEY" ]] || { echo "ERROR: readable TP27_ACME_SSH_KEY is required" >&2; exit 2; }
 
-python3 - "$DOMAIN" "$IP" <<'PY'
+python3 - "$DOMAIN" "$IP" "$RELAY_HOST" <<'PY'
 import ipaddress, re, sys
-name, ip = sys.argv[1], sys.argv[2]
+name, ip, relay = sys.argv[1], sys.argv[2], sys.argv[3]
 ipaddress.ip_address(ip)
+ipaddress.ip_address(relay)
 if len(name) > 253 or not re.fullmatch(r'(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}', name):
     raise SystemExit('ERROR: invalid DNS domain')
 PY
 
-for cmd in curl openssl haproxy systemctl ss; do
+for cmd in curl openssl haproxy systemctl ss ssh; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "ERROR: missing command: $cmd" >&2; exit 3; }
 done
 
@@ -51,6 +59,7 @@ echo " TP27 DOMAIN TLS ACTIVATION"
 echo " DOMAIN=$DOMAIN"
 echo " IP=$IP"
 echo " BACKEND=$BACKEND"
+echo " ACME_RELAY=$RELAY_USER@$RELAY_HOST"
 echo "============================================================"
 echo "BACKEND_HTTP=$BACKEND_HTTP"
 
@@ -74,14 +83,18 @@ fetch() {
 fetch bin/tp27-domain-cert-renew /usr/local/lib/tp27/tp27-domain-cert-renew
 fetch systemd/tp27-domain-cert-renew.service /etc/systemd/system/tp27-domain-cert-renew.service
 fetch systemd/tp27-domain-cert-renew.timer /etc/systemd/system/tp27-domain-cert-renew.timer
+fetch systemd/tp27-acme-ssh-forward.service /etc/systemd/system/tp27-acme-ssh-forward.service
 chmod 755 /usr/local/lib/tp27/tp27-domain-cert-renew
 
 cat >"$CONFIG" <<EOF
 TP27_DOMAIN=$DOMAIN
 TP27_CONTROLLER_IP=$IP
-TP27_ACME_HOST=acme-v02.api.letsencrypt.org
-TP27_ACME_LOCAL=127.0.0.2
+TP27_ACME_HOST=$ACME_HOST
+TP27_ACME_LOCAL=$ACME_LOCAL
 TP27_ACME_FORWARD_SERVICE=tp27-acme-ssh-forward.service
+TP27_ACME_RELAY_HOST=$RELAY_HOST
+TP27_ACME_RELAY_USER=$RELAY_USER
+TP27_ACME_SSH_KEY=$SSH_KEY
 TP27_PLAIN_SERVICE=tp27-plain-control.service
 TP27_CERTBOT=/usr/local/bin/certbot
 TP27_HAPROXY_CFG=/etc/haproxy/haproxy.cfg
@@ -133,6 +146,23 @@ if ! haproxy -c -f "$HAPROXY_CFG"; then
   exit 10
 fi
 
+# Replace any transient ACME tunnel with the persistent, config-driven unit.
+systemctl stop tp27-acme-ssh-forward.service >/dev/null 2>&1 || true
+systemctl daemon-reload
+systemctl enable --now tp27-acme-ssh-forward.service
+
+ACME_HTTP="000"
+for attempt in $(seq 1 15); do
+  ACME_HTTP="$(curl -4 --resolve "${ACME_HOST}:443:${ACME_LOCAL}" --connect-timeout 3 --max-time 8 -sS -o /dev/null -w '%{http_code}' "https://${ACME_HOST}/directory" 2>/dev/null || true)"
+  [[ "$ACME_HTTP" == "200" ]] && break
+  sleep 1
+done
+if [[ "$ACME_HTTP" != "200" ]]; then
+  echo "ERROR: persistent ACME SSH forward health failed: HTTP $ACME_HTTP" >&2
+  exit 10
+fi
+echo "ACME_HTTP=$ACME_HTTP"
+
 # Retire the two overlapping IP-certificate renewal paths. They must not race
 # the domain renewal job or restart the backend behind HAProxy.
 systemctl disable --now tp27-cert-renew.timer >/dev/null 2>&1 || true
@@ -162,6 +192,7 @@ fi
 /usr/local/lib/tp27/tp27-domain-cert-renew
 
 echo "DOMAIN_HTTP=$DOMAIN_HTTP"
+echo "ACME_FORWARD=$(systemctl is-active tp27-acme-ssh-forward.service)"
 echo "DOMAIN_CERT_TIMER=$(systemctl is-active tp27-domain-cert-renew.timer)"
 echo "IP_RENEW_TIMER_1=$(systemctl is-active tp27-cert-renew.timer 2>/dev/null || true)"
 echo "IP_RENEW_TIMER_2=$(systemctl is-active tp27-certbot-renew.timer 2>/dev/null || true)"
