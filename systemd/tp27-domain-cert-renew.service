@@ -1,0 +1,13 @@
+[Unit]
+Description=TP27 domain TLS certificate renewal
+After=network-online.target tp27-acme-ssh-forward.service haproxy.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/tp27/tp27-domain-cert-renew
+TimeoutStartSec=300
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
