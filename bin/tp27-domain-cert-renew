@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+CONFIG="${TP27_DOMAIN_SSL_CONFIG:-/etc/tp27/domain-ssl.env}"
+[[ "$EUID" -eq 0 ]] || { echo "ERROR: run as root" >&2; exit 1; }
+[[ -s "$CONFIG" ]] || { echo "ERROR: missing $CONFIG" >&2; exit 2; }
+# shellcheck disable=SC1090
+source "$CONFIG"
+
+: "${TP27_DOMAIN:?TP27_DOMAIN is required}"
+: "${TP27_CONTROLLER_IP:?TP27_CONTROLLER_IP is required}"
+
+ACME_HOST="${TP27_ACME_HOST:-acme-v02.api.letsencrypt.org}"
+ACME_LOCAL="${TP27_ACME_LOCAL:-127.0.0.2}"
+ACME_FORWARD_SERVICE="${TP27_ACME_FORWARD_SERVICE:-tp27-acme-ssh-forward.service}"
+PLAIN_SERVICE="${TP27_PLAIN_SERVICE:-tp27-plain-control.service}"
+CERTBOT="${TP27_CERTBOT:-/usr/local/bin/certbot}"
+HAPROXY_CFG="${TP27_HAPROXY_CFG:-/etc/haproxy/haproxy.cfg}"
+LIVE="${TP27_CERT_LIVE:-/etc/letsencrypt/live/$TP27_DOMAIN}"
+BUNDLE="${TP27_HAPROXY_CERT_BUNDLE:-/etc/haproxy/tp27-certs/domain.pem}"
+RENEW_BEFORE_SECONDS="${TP27_RENEW_BEFORE_SECONDS:-2592000}"
+FORCE_RENEW="${TP27_FORCE_RENEW:-0}"
+LOCK="${TP27_RENEW_LOCK:-/run/lock/tp27-domain-cert-renew.lock}"
+ACME_SERVER="https://${ACME_HOST}/directory"
+
+for cmd in openssl curl systemctl iptables ss haproxy flock python3; do
+  command -v "$cmd" >/dev/null 2>&1 || { echo "ERROR: missing command: $cmd" >&2; exit 3; }
+done
+[[ -x "$CERTBOT" ]] || { echo "ERROR: certbot not executable: $CERTBOT" >&2; exit 4; }
+
+install -d -m 755 "$(dirname "$LOCK")" "$(dirname "$BUNDLE")"
+exec 9>"$LOCK"
+flock -n 9 || { echo "RENEWAL=SKIPPED_ALREADY_RUNNING"; exit 0; }
+
+cert_has_domain() {
+  [[ -s "$LIVE/fullchain.pem" && -s "$LIVE/privkey.pem" ]] || return 1
+  openssl x509 -in "$LIVE/fullchain.pem" -noout -ext subjectAltName 2>/dev/null \
+    | grep -Fq "DNS:$TP27_DOMAIN"
+}
+
+build_bundle() {
+  cert_has_domain || { echo "ERROR: valid domain certificate files not found" >&2; return 1; }
+  local tmp
+  tmp="${BUNDLE}.tmp.$$"
+  cat "$LIVE/fullchain.pem" "$LIVE/privkey.pem" >"$tmp"
+  chown root:haproxy "$tmp" 2>/dev/null || chown root:root "$tmp"
+  chmod 640 "$tmp"
+  mv -f "$tmp" "$BUNDLE"
+  haproxy -c -f "$HAPROXY_CFG" >/dev/null
+}
+
+reload_and_verify() {
+  systemctl reload haproxy
+  local code="000"
+  for attempt in $(seq 1 15); do
+    code="$(curl -4 --connect-timeout 3 --max-time 6 -sS -o /dev/null -w '%{http_code}' "https://${TP27_DOMAIN}:8787/" 2>/dev/null || true)"
+    if [[ "$code" != "000" ]]; then
+      echo "DOMAIN_HTTPS=$code"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "ERROR: domain HTTPS health failed after HAProxy reload" >&2
+  return 1
+}
+
+ensure_bundle_current() {
+  cert_has_domain || return 1
+  local live_serial bundle_serial=""
+  live_serial="$(openssl x509 -in "$LIVE/fullchain.pem" -noout -serial | cut -d= -f2)"
+  if [[ -s "$BUNDLE" ]]; then
+    bundle_serial="$(openssl x509 -in "$BUNDLE" -noout -serial 2>/dev/null | cut -d= -f2 || true)"
+  fi
+  if [[ "$live_serial" != "$bundle_serial" ]]; then
+    echo "BUNDLE=REBUILD serial=$live_serial"
+    build_bundle
+    reload_and_verify
+  else
+    echo "BUNDLE=CURRENT serial=$live_serial"
+  fi
+}
+
+if cert_has_domain && [[ "$FORCE_RENEW" != "1" ]] \
+   && openssl x509 -in "$LIVE/fullchain.pem" -noout -checkend "$RENEW_BEFORE_SECONDS" >/dev/null 2>&1; then
+  ensure_bundle_current
+  openssl x509 -in "$LIVE/fullchain.pem" -noout -serial -dates -ext subjectAltName
+  echo "RENEWAL=NOT_DUE"
+  exit 0
+fi
+
+systemctl is-active --quiet "$ACME_FORWARD_SERVICE" || {
+  echo "ERROR: ACME SSH forward is not active: $ACME_FORWARD_SERVICE" >&2
+  exit 5
+}
+
+ACME_HTTP="$(curl -4 --resolve "${ACME_HOST}:443:${ACME_LOCAL}" --connect-timeout 5 --max-time 15 -sS -o /dev/null -w '%{http_code}' "$ACME_SERVER" 2>/dev/null || true)"
+[[ "$ACME_HTTP" == "200" ]] || { echo "ERROR: ACME egress health failed: HTTP $ACME_HTTP" >&2; exit 6; }
+echo "ACME_HTTP=$ACME_HTTP"
+
+PLAIN_WAS_ACTIVE=0
+systemctl is-active --quiet "$PLAIN_SERVICE" && PLAIN_WAS_ACTIVE=1 || true
+HOSTS_BACKUP="$(mktemp /run/tp27-hosts.XXXXXX)"
+cp -a /etc/hosts "$HOSTS_BACKUP"
+RULE_COMMENT="TP27-DOMAIN-ACME-TEMP"
+CLEANED=0
+
+cleanup() {
+  local rc=$?
+  set +e
+  if [[ "$CLEANED" -eq 0 ]]; then
+    cp -a "$HOSTS_BACKUP" /etc/hosts 2>/dev/null || true
+    rm -f "$HOSTS_BACKUP"
+    while iptables -C INPUT -d "$TP27_CONTROLLER_IP/32" -p tcp --dport 80 -m comment --comment "$RULE_COMMENT" -j ACCEPT >/dev/null 2>&1; do
+      iptables -D INPUT -d "$TP27_CONTROLLER_IP/32" -p tcp --dport 80 -m comment --comment "$RULE_COMMENT" -j ACCEPT >/dev/null 2>&1 || break
+    done
+    if [[ "$PLAIN_WAS_ACTIVE" -eq 1 ]]; then
+      systemctl restart "$PLAIN_SERVICE" >/dev/null 2>&1 || true
+    fi
+    CLEANED=1
+  fi
+  return "$rc"
+}
+trap cleanup EXIT INT TERM
+
+python3 - "$ACME_HOST" "$ACME_LOCAL" <<'PY'
+from pathlib import Path
+import sys
+host, ip = sys.argv[1], sys.argv[2]
+p = Path('/etc/hosts')
+lines = p.read_text(encoding='utf-8').splitlines()
+lines = [line for line in lines if host not in line]
+lines.append(f'{ip} {host} # TP27-ACME-SSH')
+p.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+PY
+
+MAPPED_HTTP="$(curl -4 --connect-timeout 5 --max-time 15 -sS -o /dev/null -w '%{http_code}' "$ACME_SERVER" 2>/dev/null || true)"
+[[ "$MAPPED_HTTP" == "200" ]] || { echo "ERROR: mapped ACME API health failed: HTTP $MAPPED_HTTP" >&2; exit 7; }
+
+echo "ACME_MAPPED_HTTP=$MAPPED_HTTP"
+iptables -I INPUT 1 -d "$TP27_CONTROLLER_IP/32" -p tcp --dport 80 -m comment --comment "$RULE_COMMENT" -j ACCEPT
+if [[ "$PLAIN_WAS_ACTIVE" -eq 1 ]]; then
+  systemctl stop "$PLAIN_SERVICE"
+fi
+
+if ss -lntH | awk '{print $4}' | grep -Eq '(^|\]):80$|(^|:)80$'; then
+  echo "ERROR: TCP/80 is still occupied after stopping TP27 plain control" >&2
+  ss -lntp | grep ':80 ' >&2 || true
+  exit 8
+fi
+
+echo "CERTBOT=START"
+timeout 240 "$CERTBOT" certonly \
+  --standalone \
+  --server "$ACME_SERVER" \
+  --cert-name "$TP27_DOMAIN" \
+  -d "$TP27_DOMAIN" \
+  --key-type ecdsa \
+  --force-renewal \
+  --non-interactive \
+  --agree-tos \
+  --register-unsafely-without-email
+
+cert_has_domain || { echo "ERROR: renewed certificate SAN does not contain DNS:$TP27_DOMAIN" >&2; exit 9; }
+openssl x509 -in "$LIVE/fullchain.pem" -noout -checkend 604800 >/dev/null 2>&1 || {
+  echo "ERROR: renewed certificate has less than 7 days validity" >&2
+  exit 10
+}
+
+build_bundle
+cleanup
+trap - EXIT INT TERM
+reload_and_verify
+
+openssl x509 -in "$LIVE/fullchain.pem" -noout -issuer -serial -dates -ext subjectAltName
+echo "RENEWAL=SUCCESS"
+echo "HAPROXY=RELOADED"
+echo "NO_TUNNEL_MODIFIED"
