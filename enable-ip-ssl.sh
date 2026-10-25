@@ -5,9 +5,19 @@ IP="${1:-193.39.9.220}"
 PANEL_UNIT="/etc/systemd/system/tp27-panel.service"
 CERTBOT_VENV="/opt/certbot"
 LIVE="/etc/letsencrypt/live/$IP"
+DOMAIN_MODE="/etc/tp27/domain-ssl.env"
 
 [[ "$EUID" -eq 0 ]] || { echo "ERROR: run as root"; exit 1; }
 [[ -f "$PANEL_UNIT" ]] || { echo "ERROR: $PANEL_UNIT not found"; exit 2; }
+
+# Domain TLS is the authoritative production mode once enabled. Refuse to
+# silently replace the HAProxy/domain architecture with a short-lived IP cert.
+if [[ -s "$DOMAIN_MODE" && "${TP27_ALLOW_IP_SSL_DOWNGRADE:-0}" != "1" ]]; then
+  echo "ERROR: TP27 domain TLS mode is active ($DOMAIN_MODE)." >&2
+  echo "Refusing to downgrade the controller to direct short-lived IP TLS." >&2
+  echo "Set TP27_ALLOW_IP_SSL_DOWNGRADE=1 only for an explicit emergency rollback." >&2
+  exit 10
+fi
 
 python3 - "$IP" <<'PY'
 import ipaddress, sys
@@ -77,8 +87,6 @@ EOF
   systemctl enable --now tp27-certbot-renew.timer >/dev/null 2>&1 || true
 }
 
-# If a valid Let's Encrypt IP certificate already exists, never downgrade to
-# self-signed just because apt/certbot is temporarily busy or unavailable.
 if valid_existing_cert; then
   echo "Existing trusted IP certificate is valid; preserving it."
   cp -a "$PANEL_UNIT" "$PANEL_UNIT.backup.$(date +%Y%m%d-%H%M%S)"
@@ -102,11 +110,8 @@ if valid_existing_cert; then
   exit 0
 fi
 
-# No usable certificate exists. Back up only the TP27 panel unit before
-# requesting a new one.
 cp -a "$PANEL_UNIT" "$PANEL_UNIT.backup.$(date +%Y%m%d-%H%M%S)"
 
-# Avoid failing immediately when unattended apt is briefly holding the lock.
 for _ in $(seq 1 60); do
   if ! fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
     break
@@ -128,7 +133,6 @@ ln -sfn "$CERTBOT_VENV/bin/certbot" /usr/local/bin/certbot
 
 echo "Certbot: $(certbot --version 2>&1)"
 
-# IP certificate validation uses HTTP-01 on TCP/80. Do not stop unrelated services.
 if ss -lntH | awk '{print $4}' | grep -Eq '(^|\]):80$|(^|:)80$'; then
   echo "ERROR: TCP port 80 is already in use."
   echo "Current listeners:"
