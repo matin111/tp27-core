@@ -1,0 +1,22 @@
+[Unit]
+Description=TP27 encrypted ACME egress forward
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/tp27/domain-ssl.env
+ExecStart=/usr/bin/ssh -NT -i ${TP27_ACME_SSH_KEY} -o IdentitiesOnly=yes -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=accept-new -L ${TP27_ACME_LOCAL}:443:${TP27_ACME_HOST}:443 ${TP27_ACME_RELAY_USER}@${TP27_ACME_RELAY_HOST}
+Restart=always
+RestartSec=5
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=/etc/tp27 /root/.ssh
+ReadWritePaths=/run
+
+[Install]
+WantedBy=multi-user.target
