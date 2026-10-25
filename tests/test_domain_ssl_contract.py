@@ -6,6 +6,7 @@ RENEW = ROOT / 'bin' / 'tp27-domain-cert-renew'
 ENABLE = ROOT / 'enable-domain-ssl.sh'
 RELAY_SETUP = ROOT / 'setup-acme-relay.sh'
 IP_SSL = ROOT / 'enable-ip-ssl.sh'
+PANEL_UNIT = ROOT / 'systemd' / 'tp27-panel.service'
 SERVICE = ROOT / 'systemd' / 'tp27-domain-cert-renew.service'
 TIMER = ROOT / 'systemd' / 'tp27-domain-cert-renew.timer'
 FORWARD = ROOT / 'systemd' / 'tp27-acme-ssh-forward.service'
@@ -71,6 +72,13 @@ def test_legacy_ip_ssl_refuses_domain_mode_downgrade():
     assert 'DOMAIN_MODE="/etc/tp27/domain-ssl.env"' in text
     assert 'TP27_ALLOW_IP_SSL_DOWNGRADE' in text
     assert 'Refusing to downgrade' in text
+
+
+def test_panel_unit_preserves_domain_mode_across_reinstall():
+    text = PANEL_UNIT.read_text(encoding='utf-8')
+    assert '[ -s /etc/tp27/domain-ssl.env ]' in text
+    assert '--host 127.0.0.1 --port 18787 --proxy-headers --forwarded-allow-ips 127.0.0.1' in text
+    assert '--host 0.0.0.0 --port 8787 --ssl-keyfile /etc/tp27/panel.key --ssl-certfile /etc/tp27/panel.crt' in text
 
 
 def test_domain_renew_systemd_contract():
