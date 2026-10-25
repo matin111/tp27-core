@@ -8,7 +8,10 @@ Type=simple
 User=root
 WorkingDirectory=/opt/tp27-panel
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/opt/tp27-panel/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8787 --ssl-keyfile /etc/tp27/panel.key --ssl-certfile /etc/tp27/panel.crt
+# Domain mode is authoritative after /etc/tp27/domain-ssl.env is installed.
+# In that mode HAProxy owns public :8787 and Uvicorn is loopback-only.
+# Legacy/fresh installs without the marker keep direct TLS behavior.
+ExecStart=/bin/bash -c 'if [ -s /etc/tp27/domain-ssl.env ]; then exec /opt/tp27-panel/venv/bin/uvicorn app:app --host 127.0.0.1 --port 18787 --proxy-headers --forwarded-allow-ips 127.0.0.1; else exec /opt/tp27-panel/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8787 --ssl-keyfile /etc/tp27/panel.key --ssl-certfile /etc/tp27/panel.crt --log-level info; fi'
 Restart=always
 RestartSec=3
 LimitNOFILE=65535
