@@ -1,0 +1,23 @@
+[Unit]
+Description=TP27 Native WSS L3 Carrier (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/lib/tp27/tp27-wss-l3.py --config /etc/tp27/hybrid/%i/wss-l3.json
+Restart=always
+RestartSec=3
+StartLimitIntervalSec=60
+StartLimitBurst=8
+LimitNOFILE=1048576
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=yes
+ReadWritePaths=/run
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target
