@@ -142,7 +142,9 @@ done
 curl -fsSL "$RAW/panel/provision_resilient.py" -o /opt/tp27-panel/provision_resilient.py
 curl -fsSL "$RAW/panel/provision_multicore.py" -o /opt/tp27-panel/provision_gre.py
 
-for f in index.html login.html style.css app.js fast-ui.js agent-manage.js premium.css premium-ui.js; do
+# Keep the deployed static assets in sync with index.html. Missing v9.css
+# breaks the dashboard grid/sidebar and makes the new layout overlap.
+for f in index.html login.html first-paint.css style.css premium.css v9.css runtime-refresh-fix.js app.js fast-ui.js agent-manage.js premium-ui.js benchmark-ui.js benchmark-auto.js server-speed-ui.js speed-recovery-fix.js safe-switch-ui.js self-update.js ui-stability.js; do
   curl -fsSL "$RAW/panel/static/$f" -o "/opt/tp27-panel/static/$f"
 done
 
