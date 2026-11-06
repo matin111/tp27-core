@@ -1,46 +1,27 @@
-# TP27 Core + TwinPanel
+# TP27 Core — پنل مدیریت تانل ایران و خارج
 
-این مخزن دو مسیر عمومی مستقل دارد:
+**TP27 Core** کنترلر مستقل ساخت، مدیریت و پایش تانل بین سرور ایران و سرورهای خارج است. **این پروژه پنل تانل است و برای نصب آن هیچ نیازی به TwinPanel یا سرویس لایسنس TwinPanel ندارید.**
 
-- **TwinPanel**: مسیر عمومی نصب، نسخه، بروزرسانی و اتصال به سرویس لایسنس/توزیع.
-- **TP27 Core**: کنترلر مستقل ساخت و مدیریت Tunnel بین سرور ایران و سرورهای خارج.
+## نصب و به‌روزرسانی پنل تانل (سرور ایران)
 
-## TwinPanel — نصب رسمی
-
-صفحه اصلی نصب و Releaseهای TwinPanel اکنون در همین مخزن و زیر مسیر `twinpanel/` قرار دارد.
-
-نسخه فعلی Candidate:
-
-```text
-1.1.0-rc.1
-```
-
-دستور نصب رسمی:
+روی سرور ایران با کاربر `root` اجرا کنید:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/matin111/tp27-core/main/twinpanel/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/matin111/tp27-core/main/install.sh | bash -s -- iran
 ```
 
-تا زمانی که License/Distribution API نهایی منتشر و Release Gate کامل پاس نشده باشد، نصب عمومی عمداً قبل از هر تغییر روی سرور متوقف می‌شود. بعد از فعال‌شدن سرویس مرکزی، همین یک دستور برای نصب Trial هفت‌روزه یا نصب با License Key استفاده می‌شود و مشتری نیازی به GitHub Token یا دسترسی به مخزن خصوصی TwinPanel ندارد.
+همین دستور برای **نصب اولیه** و **به‌روزرسانی نصب قبلی TP27** استفاده می‌شود. پیش از اجرای آپدیت روی سرور عملیاتی، از فایل‌های `/etc/tp27/` و اطلاعات مهم بکاپ مستقل بگیرید.
 
-مسیرهای عمومی TwinPanel:
+- آدرس پیش‌فرض پنل: `https://IRAN_IP:8787`
+- فایل اطلاعات ورود: `/root/tp27-panel-credentials.txt`
+- بررسی وضعیت: `tp27 status`
+- **سرور خارج:** دستور Agent همراه با توکن واقعی، پس از نصب سرور ایران نمایش داده می‌شود؛ جزئیات پایین صفحه آمده است.
 
-```text
-twinpanel/README.md
-twinpanel/config.json
-twinpanel/releases/stable.json
-twinpanel/install.sh
-```
-
-جزئیات نصب و بروزرسانی:
-
-```text
-https://github.com/matin111/tp27-core/tree/main/twinpanel
-```
+> **هشدار درباره دستور اشتباه:** مسیر `twinpanel/install.sh` مربوط به محصول جداگانه TwinPanel است؛ آن را برای نصب تانل TP27 اجرا نکنید. پیام `TwinPanel license/distribution service is not published yet` مربوط به همان اسکریپت و بی‌ارتباط با نصب TP27 است.
 
 ---
 
-## TP27 Core
+## معرفی و راهنمای TP27 Core
 
 TP27 یک کنترلر مستقل برای ساخت و مدیریت چند Tunnel بین **یک سرور ایران** و **چند سرور خارج** است. پروژه از TwinPanel مستقل است و سرویس‌های VPN اصلی سرور خارج را Restart یا حذف نمی‌کند.
 
