@@ -130,7 +130,10 @@ pip_install_with_retry() {
   return 1
 }
 
-pip_install_with_retry --upgrade pip
+# The distro-provided venv pip is sufficient. A mandatory self-upgrade can
+# block the entire installation when files.pythonhosted.org is slow/unreachable.
+# Allow operators to choose a trusted PyPI mirror with PIP_INDEX_URL if needed.
+echo "Using existing pip: $(/opt/tp27-panel/venv/bin/python -m pip --version)"
 pip_install_with_retry -r /opt/tp27-panel/requirements.txt
 
 for f in app.py auth.py provision.py provision_password.py provision_agent.py agent_control.py ports.py portplan.py plain_control.py; do
