@@ -109,9 +109,29 @@ apt-get install -y python3-venv openssl curl ca-certificates iptables openssh-cl
 install -d -m 755 /opt/tp27-panel /opt/tp27-panel/static /usr/local/lib/tp27
 install -d -m 700 /etc/tp27 /etc/tp27/backups /var/log/tp27/panel-jobs
 python3 -m venv /opt/tp27-panel/venv
-/opt/tp27-panel/venv/bin/pip install --upgrade pip >/dev/null
-curl -fsSL "$RAW/panel/requirements.txt" -o /opt/tp27-panel/requirements.txt
-/opt/tp27-panel/venv/bin/pip install -r /opt/tp27-panel/requirements.txt >/dev/null
+curl -fsSL --retry 3 --retry-delay 2 "$RAW/panel/requirements.txt" -o /opt/tp27-panel/requirements.txt
+
+# PyPI downloads may stall on restricted/unstable routes. Retry only the
+# dependency operation, preserving the existing venv and all TP27 state.
+pip_install_with_retry() {
+  local attempt
+  for attempt in 1 2 3 4; do
+    echo "Installing panel Python dependencies (attempt $attempt/4)..."
+    if /opt/tp27-panel/venv/bin/python -m pip --disable-pip-version-check \
+      --timeout 120 --retries 8 install "$@"; then
+      return 0
+    fi
+    if (( attempt < 4 )); then
+      echo "WARNING: PyPI download failed. Retrying without resetting panel state..." >&2
+      sleep $((attempt * 5))
+    fi
+  done
+  echo "ERROR: Python package download failed after 4 attempts; check files.pythonhosted.org connectivity." >&2
+  return 1
+}
+
+pip_install_with_retry --upgrade pip
+pip_install_with_retry -r /opt/tp27-panel/requirements.txt
 
 for f in app.py auth.py provision.py provision_password.py provision_agent.py agent_control.py ports.py portplan.py plain_control.py; do
   curl -fsSL "$RAW/panel/$f" -o "/opt/tp27-panel/$f"
